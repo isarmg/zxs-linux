@@ -1,0 +1,14 @@
+#!/bin/sh
+# No resident daemon and no automatic update or certificate replacement.
+set -eu
+if [ -f /etc/zxs/https/server.pem ] && ! openssl x509 -in /etc/zxs/https/server.pem -noout -checkend 2592000 >/dev/null 2>&1; then
+    logger -p daemon.warning -t zxs-health 'HTTPS certificate expires within 30 days or cannot be read; check zxs-https status.'
+fi
+year=$(date -u +%Y)
+[ "$year" -ge 2026 ] || logger -p daemon.warning -t zxs-health 'Check the UTC clock before using HTTPS or APT.'
+for device in /dev/nvme[0-9]; do
+    [ -c "$device" ] || continue
+    if ! timeout 15 smartctl -H "$device" >/dev/null 2>&1; then
+        logger -p daemon.warning -t zxs-health "NVMe health check needs attention: $device; run nvme smart-log."
+    fi
+done

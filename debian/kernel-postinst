@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
+# Run as aa-zxs-hardware, BEFORE Debian's initramfs-tools hook.
+# Debian generates the initrd once after the modules have been filtered.
 /usr/sbin/zxs-hardware-trim "${1:?Kernel version is required}"
-/usr/sbin/update-initramfs -u -k "$1"

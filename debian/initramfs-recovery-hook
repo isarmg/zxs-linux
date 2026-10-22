@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in prereqs) exit 0 ;; esac
+. /usr/share/initramfs-tools/hook-functions
+# klibc mount cannot combine MS_BIND and MS_REMOUNT. Use the already installed
+# official util-linux binary, including its library dependencies.
+copy_exec /usr/bin/mount /usr/bin/zxs-mount

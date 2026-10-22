@@ -39,18 +39,22 @@ for directory in /lib/modules/*; do
         for(node in saved) print node
     }' "$policy/modules.keep" "$policy/modules.deny" "$directory/modules.dep" | sort > "$keep"
     [ -s "$keep" ] || { echo 'Hardware policy retained no modules.' >&2; exit 1; }
-    find "$directory/kernel" -type f -name '*.ko*' | while IFS= read -r module; do
-        relative=${module#"$directory/"}
-        if ! grep -Fqx "$relative" "$keep"; then rm -f "$module"; fi
-    done
+    # Debian module filenames contain no newlines. Read the keep set once,
+    # and batch deletion instead of spawning grep/rm for every module.
+    find "$directory/kernel" -type f -name '*.ko*' |
+        awk -v prefix="$directory/" '
+        FILENAME==ARGV[1] { keep[$0]=1; next }
+        { relative=substr($0,length(prefix)+1); if (!(relative in keep)) printf "%s%c",$0,0 }
+        ' "$keep" - | xargs -0 -r rm -f --
     cp "$keep" "$state/$version.modules"
     depmod -a "$version"
     rm -f "$keep"
     trap - EXIT HUP INT TERM
 done
-find /usr/lib/firmware -type f -o -type l | while IFS= read -r firmware; do
-    relative=${firmware#/usr/lib/firmware/}
-    if ! awk -v name="$relative" '!/^#/ && NF && name ~ $0 { found=1 } END { exit !found }' "$policy/firmware.keep"; then
-        rm -f "$firmware"
-    fi
-done
+find /usr/lib/firmware -type f -o -type l |
+    awk '
+    FILENAME==ARGV[1] { if ($0 !~ /^#/ && NF) patterns[++count]=$0; next }
+    { name=$0; sub("^/usr/lib/firmware/", "", name); keep=0
+      for(i=1;i<=count;i++) if(name ~ patterns[i]) { keep=1; break }
+      if(!keep) printf "%s%c",$0,0
+    }' "$policy/firmware.keep" - | xargs -0 -r rm -f --

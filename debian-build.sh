@@ -33,7 +33,7 @@ container() {
 case "${1:-plan}" in
     plan)
         echo 'Debian 13 stable / Intel Core Ultra 9 288V / NVMe / UEFI; complete apt/dpkg, manual updates'
-        echo '64 MiB EFI + 1 GiB ext4 root; ext4/Btrfs tools; Thunderbolt IPv4 DHCP/IPv4LL; UTC; LAN HTTPS'
+        echo '64 MiB EFI + 4 GiB ext4 root; boot recovery and diagnostics; Thunderbolt IPv4 DHCP/IPv4LL; UTC; LAN HTTPS'
         echo "Output: $ZXS_OUTPUT_DIR; delivery: dist/zxs-linux-amd64-debian"
         ;;
     setup)

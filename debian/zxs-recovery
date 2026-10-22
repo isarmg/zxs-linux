@@ -1,0 +1,65 @@
+#!/bin/sh
+# Preserve a booted kernel AND its modules/firmware outside dpkg's file paths.
+set -eu
+umask 077
+base=/boot/zxs-recovery
+mkdir -p /run/lock
+exec 9>/run/lock/zxs-recovery.lock
+flock -x 9
+case "${1:-status}" in
+    record-boot)
+        grep -qw zxs.recovery=1 /proc/cmdline && exit 0
+        version=$(uname -r)
+        sha256sum "/boot/vmlinuz-$version" "/boot/initrd.img-$version" > /run/zxs-booted.sha256
+        ;;
+    save)
+        grep -qw zxs.recovery=1 /proc/cmdline && { echo 'Cannot replace recovery while using it.' >&2; exit 1; }
+        test -f /run/zxs-booted.sha256 && sha256sum -c --status /run/zxs-booted.sha256 || {
+            echo 'Boot the installed kernel before creating a recovery copy.' >&2; exit 1;
+        }
+        version=$(uname -r)
+        test -s "/lib/modules/$version/modules.dep"
+        mkdir -p "$base"
+        if cmp -s /run/zxs-booted.sha256 "$base/current/booted.sha256"; then exit 0; fi
+        rm -f "$base/.next"
+        slot=$(mktemp -d "$base/slot.XXXXXX")
+        cleanup() {
+            rm -f "$base/.next"
+            # An interrupt after publication must never delete the active slot.
+            if [ "$(readlink "$base/current" 2>/dev/null || :)" != "${slot##*/}" ]; then rm -rf "$slot"; fi
+        }
+        trap cleanup EXIT HUP INT TERM
+        cp "/boot/vmlinuz-$version" "$slot/kernel"
+        cp "/boot/initrd.img-$version" "$slot/initrd"
+        mkdir "$slot/modules"
+        cp -a "/lib/modules/$version" "$slot/modules/"
+        cp -a /usr/lib/firmware "$slot/firmware"
+        cp /run/zxs-booted.sha256 "$slot/booted.sha256"
+        printf '%s\n' "$version" > "$slot/version"
+        # Publish only a complete, flushed slot. Never delete the active slot first.
+        sync
+        ln -s "${slot##*/}" "$base/.next"
+        mv -Tf "$base/.next" "$base/current"
+        sync
+        trap - EXIT HUP INT TERM
+        for previous in "$base"/slot.*; do
+            [ "$previous" = "$slot" ] || rm -rf "$previous"
+        done
+        ;;
+    boot-once)
+        test -s "$base/current/kernel" && test -s "$base/current/initrd" || {
+            echo 'No recovery checkpoint; run zxs-recovery save first.' >&2; exit 1;
+        }
+        mkdir -p /boot/grub
+        test -f /boot/grub/grubenv || grub-editenv /boot/grub/grubenv create
+        grub-editenv /boot/grub/grubenv set next_entry=zxs-recovery
+        echo 'The next boot will use the preserved kernel. Reboot when ready.'
+        ;;
+    status)
+        if [ -s "$base/current/version" ]; then
+            printf 'Preserved kernel: '; cat "$base/current/version"
+        else echo 'No recovery checkpoint yet.'; fi
+        if grep -qw zxs.recovery=1 /proc/cmdline; then echo 'Running with preserved modules and firmware.'; fi
+        ;;
+    *) echo 'Usage: zxs-recovery [status|save|boot-once]' >&2; exit 2 ;;
+esac

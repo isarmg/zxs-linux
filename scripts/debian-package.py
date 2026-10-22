@@ -7,8 +7,9 @@ import subprocess
 import tarfile
 
 from common import DIST, OUTPUT, ROOT, artifact_identity, require_current_report
-from debian_package import checksums
+from debian_package import checksums, require_build_inputs
 
+require_build_inputs()
 identity = artifact_identity()
 verification = require_current_report('verify', identity)
 boot = require_current_report('boot-test', identity)
@@ -18,7 +19,7 @@ with (DIST / 'debian-disk.img.xz').open('wb') as stream:
                    check=True, stdout=stream)
 for source, name in ((OUTPUT / 'images/bzImage', 'bzImage'), (OUTPUT / 'images/initrd.img', 'initrd.img'),
                      (OUTPUT / 'linux.config', 'linux.config'), (OUTPUT / 'packages.json', 'packages.json'),
-                     (OUTPUT / 'build.json', 'build.json'), (ROOT / 'README.md', 'README.md')):
+                     (OUTPUT / 'build.json', 'build.json'), (ROOT / 'debian/README.md', 'README.md')):
     shutil.copyfile(source, DIST / ('debian-' + name))
 (DIST / 'debian-validation.json').write_text(json.dumps({'variant': 'debian', 'image': verification, 'boot': boot}, indent=2) + '\n')
 files = subprocess.run(['git', '-c', 'safe.directory=' + str(ROOT), '-C', str(ROOT), 'ls-files', '-c', '-o', '--exclude-standard', '-z'],

@@ -1,0 +1,14 @@
+#!/bin/sh
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+. /scripts/functions
+case " $(cat /proc/cmdline) " in *' zxs.recovery=1 '*) ;; *) exit 0 ;; esac
+base="$rootmnt/boot/zxs-recovery/current"
+version=$(uname -r)
+[ -s "$base/modules/$version/modules.dep" ] || panic 'ZXS recovery modules are missing; use rescue USB media.'
+for name in modules firmware; do
+    destination="$rootmnt/usr/lib/$name"
+    /usr/bin/zxs-mount -o bind "$base/$name" "$destination" || panic "Cannot mount preserved $name"
+    /usr/bin/zxs-mount -o remount,bind,ro "$base/$name" "$destination" || panic "Cannot protect preserved $name"
+done

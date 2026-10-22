@@ -10,13 +10,14 @@ import tarfile
 from pathlib import Path
 
 from common import DIST, OUTPUT, ROOT, WORK, artifact_identity, config, report, sha256
+from debian_package import build_inputs, require_build_inputs
 
 TARGET = OUTPUT / 'target'
 IMAGES = OUTPUT / 'images'
 ROOT_PARTUUID = '5a585300-0000-4000-8000-000000000002'
 ROOT_FSUUID = '5a585300-0000-4000-8000-000000000003'
 MIB = 1024**2
-ROOT_MIB = 1024
+ROOT_MIB = 4096
 
 
 def run(*args, **kwargs):
@@ -93,7 +94,13 @@ def configure():
     install('debian/zxs-hardware-trim', 'usr/sbin/zxs-hardware-trim')
     install('debian/zxs-update-bootloader', 'usr/sbin/zxs-update-bootloader')
     install('debian/apt-postinvoke', 'usr/sbin/zxs-post-package-update')
-    install('debian/kernel-postinst', 'etc/kernel/postinst.d/zz-zxs-hardware')
+    install('debian/apt-preinstall', 'usr/sbin/zxs-apt-preinstall')
+    for name in ('zxs-recovery', 'zxs-prepare-boot-update', 'zxs-diagnose', 'zxs-health-check'):
+        install('debian/' + name, 'usr/sbin/' + name)
+    install('debian/kernel-preinst', 'etc/kernel/preinst.d/aa-zxs-recovery')
+    install('debian/kernel-postinst', 'etc/kernel/postinst.d/aa-zxs-hardware')
+    install('debian/initramfs-recovery', 'etc/initramfs-tools/scripts/local-bottom/zxs-recovery')
+    install('debian/initramfs-recovery-hook', 'etc/initramfs-tools/hooks/zxs-recovery')
     # Keep package databases and the official update toolchain intact.
     for source in (TARGET / 'etc/apt/sources.list.d').glob('*'):
         source.unlink()
@@ -104,6 +111,8 @@ APT::Periodic::Enable "0";
 APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Unattended-Upgrade "0";
 DPkg::Post-Invoke { "/usr/sbin/zxs-post-package-update"; };
+DPkg::Pre-Install-Pkgs { "/usr/sbin/zxs-apt-preinstall"; };
+DPkg::Tools::Options::/usr/sbin/zxs-apt-preinstall::Version "2";
 ''')
     write('etc/dpkg/dpkg.cfg.d/01-zxs', '''path-exclude=/usr/share/man/*
 path-exclude=/usr/share/info/*
@@ -167,15 +176,47 @@ SystemKeepFree=128M
 SystemMaxFileSize=8M
 RuntimeMaxUse=16M
 ''')
+    write('etc/systemd/system/zxs-record-boot.service', '''[Unit]
+Description=Record booted kernel files before local package maintenance
+After=local-fs.target
+Before=getty.target getty@tty1.service
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/zxs-recovery record-boot
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+''')
+    write('etc/systemd/system/zxs-health.service', '''[Unit]
+Description=Check local certificate, UTC clock and NVMe health
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/zxs-health-check
+''')
+    write('etc/systemd/system/zxs-health.timer', '''[Unit]
+Description=Daily local health check
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+RandomizedDelaySec=5min
+[Install]
+WantedBy=timers.target
+''')
+    write('etc/systemd/system/fstrim.timer.d/zxs.conf', '''[Timer]
+OnCalendar=
+OnCalendar=weekly
+Persistent=false
+RandomizedDelaySec=1h
+''')
     for unit in ('stunnel4.service', 'systemd-networkd.service', 'systemd-networkd-wait-online.service',
                  'systemd-resolved.service', 'systemd-timesyncd.service',
                  'apt-daily.timer', 'apt-daily-upgrade.timer', 'apt-daily.service', 'apt-daily-upgrade.service',
-                 'e2scrub_all.timer', 'e2scrub_reap.service', 'fstrim.timer', 'smartmontools.service',
+                 'e2scrub_all.timer', 'e2scrub_reap.service', 'smartmontools.service',
                  'nvmefc-boot-connections.service', 'nvmf-autoconnect.service', 'nvmf-connect.target',
                  'serial-getty@.service'):
         run('chroot', TARGET, 'systemctl', '--root=/', 'mask', unit)
     run('chroot', TARGET, 'systemctl', '--root=/', 'enable', 'dhcpcd.service', 'zxs-https.service',
-        'getty@tty1.service')
+        'getty@tty1.service', 'zxs-record-boot.service', 'zxs-health.timer', 'fstrim.timer')
     run('chroot', TARGET, 'systemctl', '--root=/', 'set-default', 'multi-user.target')
     kernel = next((TARGET / 'lib/modules').iterdir()).name
     save_test_modules(kernel)
@@ -203,12 +244,16 @@ RuntimeMaxUse=16M
         'efi_mib': 64, 'root_mib': ROOT_MIB, 'updates': 'manual apt/dpkg; automatic updates disabled',
         'hardware': 'Intel Core Ultra 9 288V, Xe, NVMe, Thunderbolt/USB4 host-to-host IPv4',
         'timezone': 'Etc/UTC', 'journal': 'persistent, 64 MiB maximum',
+        'recovery': 'booted kernel, initrd, modules and firmware checkpoint before boot-package updates',
+        'maintenance': 'weekly TRIM; daily local health checks; no automatic package updates',
         'console': 'local tty1 with USB keyboard; physical serial disabled',
         'legacy_hardware': 'no PS/2, optical/floppy/parallel, legacy USB hosts or physical serial',
         'package_manifest_scope': 'installed Debian packages; hardware files filtered by /etc/zxs/hardware',
         'hardware_policy_sha256': {name: sha256(ROOT / 'debian' / name)
                                    for name in ('modules.keep', 'modules.deny', 'firmware.keep')},
         'package_selection_sha256': sha256(ROOT / 'debian/packages.list'),
+        'package_manifest_sha256': sha256(OUTPUT / 'packages.json'),
+        'build_inputs_sha256': build_inputs(),
         'sources_sha256': sha256(ROOT / 'debian/sources.list'),
     }, indent=2) + '\n')
     for relative in ('var/cache/apt/archives', 'var/lib/apt/lists', 'var/log', 'tmp', 'var/tmp'):
@@ -257,22 +302,15 @@ def save_test_modules(kernel):
 
 def make_images():
     kernel = (OUTPUT / 'kernel-version').read_text().strip()
-    grub_cfg = f'''set timeout=1
-set default=0
-terminal_input console
-terminal_output console
-menuentry 'ZXS Debian minimal' {{
-    search --no-floppy --fs-uuid --set=root {ROOT_FSUUID}
-    linux /vmlinuz root=PARTUUID={ROOT_PARTUUID} rootfstype=ext4 rootwait rw console=tty1 ipv6.disable=1 8250.nr_uarts=0 i8042.nokbd i8042.noaux
-    initrd /initrd.img
-}}
-'''
+    grub_cfg = ((ROOT / 'debian/grub.cfg').read_text().replace('@ROOT_FSUUID@', ROOT_FSUUID)
+                .replace('@ROOT_PARTUUID@', ROOT_PARTUUID))
     (IMAGES / 'grub.cfg').write_text(grub_cfg)
     write('etc/zxs/grub.cfg', grub_cfg)
     loader = IMAGES / 'BOOTX64.EFI'
     run('grub-mkstandalone', '-O', 'x86_64-efi', '-o', loader,
-        '--modules=part_gpt ext2 fat search search_fs_uuid linux normal all_video',
+        '--modules=part_gpt ext2 fat search search_fs_uuid linux normal all_video loadenv',
         'boot/grub/grub.cfg=' + str(IMAGES / 'grub.cfg'))
+    run('chroot', TARGET, 'zxs-post-package-update', '--record-state')
     efi = IMAGES / 'efi-part.vfat'
     with efi.open('wb') as stream:
         stream.truncate(64 * MIB)
@@ -303,6 +341,8 @@ def verify():
             raise RuntimeError(description)
         checks.append(description)
     try:
+        require_build_inputs()
+        checks.append('Image and package manifest bound to the current source inputs')
         packages = {p['name'].split(':')[0] for p in json.loads((OUTPUT / 'packages.json').read_text())}
         for name in ('systemd-sysv', 'coreutils', 'e2fsprogs', 'btrfs-progs', 'util-linux', 'fdisk',
                      'grub-efi-amd64-bin', 'stunnel4'):
@@ -362,8 +402,30 @@ def verify():
         require(not (TARGET / 'etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service').is_symlink(),
                 'No serial login enabled')
         require('UUID=5A58-5301 /boot/efi' in (TARGET / 'etc/fstab').read_text(), 'EFI partition mounted for supported bootloader updates')
-        require((TARGET / 'etc/kernel/postinst.d/zz-zxs-hardware').is_file(), 'Kernel update reapplies hardware policy')
-        require('zxs-post-package-update' in (TARGET / 'etc/apt/apt.conf.d/90-zxs').read_text(), 'APT updates regenerate initramfs and EFI loader')
+        require((TARGET / 'etc/kernel/postinst.d/aa-zxs-hardware').is_file(), 'Hardware policy runs before the official initramfs kernel hook')
+        require(not (TARGET / 'etc/kernel/postinst.d/zz-zxs-hardware').exists(), 'No duplicate late initramfs generation hook')
+        require('zxs-apt-preinstall' in (TARGET / 'etc/apt/apt.conf.d/90-zxs').read_text(), 'Boot package updates have preflight and checkpoint hooks')
+        require('zxs-post-package-update' in (TARGET / 'etc/apt/apt.conf.d/90-zxs').read_text(), 'APT refreshes changed boot inputs only')
+        require('scripts/local-bottom/zxs-recovery' in initrd_listing, 'Recovery mounts preserved modules and firmware from the initramfs')
+        require('usr/bin/zxs-mount' in initrd_listing, 'Official mount utility supports read-only recovery bind mounts')
+        require('zxs-recovery' in grub and 'systemd.unit=rescue.target' in grub, 'GRUB offers preserved-kernel and password-protected local rescue entries')
+        require(not (TARGET / 'boot/zxs-recovery/current').exists(), 'No duplicate recovery kernel on the factory image')
+        for tool in ('zxs-recovery', 'zxs-diagnose', 'zxs-health-check'):
+            require((TARGET / 'usr/sbin' / tool).is_file(), 'Local maintenance helper: ' + tool)
+        for source, destination in (
+                ('apt-postinvoke', 'usr/sbin/zxs-post-package-update'),
+                ('apt-preinstall', 'usr/sbin/zxs-apt-preinstall'),
+                ('kernel-preinst', 'etc/kernel/preinst.d/aa-zxs-recovery'),
+                ('kernel-postinst', 'etc/kernel/postinst.d/aa-zxs-hardware'),
+                ('initramfs-recovery', 'etc/initramfs-tools/scripts/local-bottom/zxs-recovery'),
+                ('initramfs-recovery-hook', 'etc/initramfs-tools/hooks/zxs-recovery'),
+                *((name, 'usr/sbin/' + name) for name in
+                  ('zxs-recovery', 'zxs-prepare-boot-update', 'zxs-diagnose', 'zxs-health-check',
+                   'zxs-hardware-trim', 'zxs-update-bootloader'))):
+            require(sha256(ROOT / 'debian' / source) == sha256(TARGET / destination),
+                    'Installed helper matches current source: ' + source)
+        require((TARGET / 'var/lib/zxs/update/firmware').is_file(), 'Factory boot input state recorded')
+        require((TARGET / 'etc/systemd/system/timers.target.wants/fstrim.timer').is_symlink(), 'Weekly NVMe TRIM enabled without boot catch-up')
         require((TARGET / 'etc/machine-id').read_text().strip() == '', 'Factory machine ID is empty')
         require(not (TARGET / 'etc/zxs/initialized').exists(), 'Factory console is not initialized')
         require(not (TARGET / 'etc/zxs/https/server.pem').exists(), 'No factory TLS key or certificate')
@@ -391,7 +453,7 @@ def verify():
         entries = table['partitiontable']['partitions']
         require(entries[1]['uuid'].lower() == ROOT_PARTUUID, 'GPT root PARTUUID matches boot configuration')
         require(entries[0]['size'] == 131072 and entries[1]['size'] == ROOT_MIB * 2048,
-                '64 MiB EFI and 1 GiB ext4 root')
+                '64 MiB EFI and 4 GiB ext4 root')
         with (IMAGES / 'disk.img').open('rb') as disk:
             import hashlib
             for entry, name in zip(entries, ('efi-part.vfat', 'rootfs.ext4')):
@@ -416,6 +478,7 @@ def verify():
 
 def legal_info():
     from common import require_current_report
+    require_build_inputs()
     identity = artifact_identity()
     require_current_report('verify', identity)
     require_current_report('boot-test', identity)

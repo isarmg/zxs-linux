@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+# Protocol v2 includes removals as well as installations. Never execute stdin.
+IFS= read -r protocol
+[ "$protocol" = 'VERSION 2' ] || { echo 'Expected APT hook protocol 2.' >&2; exit 1; }
+while IFS= read -r line && [ -n "$line" ]; do :; done
+boot_change=no
+while read -r package old comparison new action; do
+    case "$package" in
+        linux-image-*|firmware-*|intel-microcode|intel-microcode:*|initramfs-tools*|grub-*) boot_change=yes ;;
+    esac
+done
+[ "$boot_change" = no ] || /usr/sbin/zxs-prepare-boot-update

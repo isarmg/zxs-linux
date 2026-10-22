@@ -2,6 +2,7 @@ name: Build and publish release
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
@@ -15,7 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  # Serialize a main commit and its tag so they do not cold-build together.
+  group: release-${{ github.event.inputs.tag || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -37,6 +39,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Check version tag
+        if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -85,6 +88,7 @@ jobs:
       - name: Test two UEFI boots, LAN HTTPS and native device recovery
         run: docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder ./build.sh test
       - name: Package validated artifacts and complete corresponding sources
+        if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
         run: |
           docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder \
             bash -Eeuo pipefail -c './build.sh package && ./build.sh legal-info'
@@ -98,6 +102,7 @@ jobs:
             ${{ env.BUILD_WORK_DIR }}/output/
           key: ${{ steps.build-cache.outputs.cache-primary-key }}
       - name: Keep verified release assets
+        if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets-${{ matrix.variant }}
@@ -139,13 +144,15 @@ jobs:
         run: ./debian-build.sh build
       - name: Verify UEFI media, official packages and factory state
         run: ./debian-build.sh verify
-      - name: Test local USB console, two boots, LAN HTTPS and data disks
+      - name: Test USB console, two normal boots, recovery boot, LAN HTTPS and data disks
         run: ./debian-build.sh test
       - name: Package verified image and corresponding sources
+        if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
         run: |
           ./debian-build.sh package
           ./debian-build.sh legal-info
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
         with:
           name: release-assets-debian
           path: dist/zxs-linux-amd64-debian/
@@ -165,6 +172,7 @@ jobs:
           retention-days: 7
 
   publish:
+    if: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
     needs: [build, debian]
     runs-on: ubuntu-24.04
     timeout-minutes: 30

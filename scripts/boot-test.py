@@ -147,7 +147,7 @@ def boot(stage, folder, password, nonce, port):
                 console.expect(r'Retype(?: new)? password:')
                 console.send(password)
             console.expect('zxs-linux login:')
-            if stage == 2:
+            if stage > 1:
                 console_ready = time.monotonic() - started
             console.send('root')
             console.expect('Password:')
@@ -343,6 +343,28 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
                 script += f"test \"$(cat /etc/zxs/boot-test-persistence)\" = '{nonce}'\n"
             if VARIANT == 'debian':
                 script += package_checks(stage, nonce)
+            if VARIANT == 'debian' and stage == 3:
+                script = f'''set -eux
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "\\n{failure}:%s\\n" "$rc"; fi' EXIT
+printf '\\n{metrics_marker}:%s:%s\\n' "$(cut -d' ' -f1 /proc/uptime)" "$(grep '^MemAvailable:' /proc/meminfo | tr -s ' ' | cut -d' ' -f2)"
+grep -qw zxs.recovery=1 /proc/cmdline
+test ! -e /vmlinuz
+test -d /var/tmp/zxs-test-hidden-modules
+findmnt -n -o OPTIONS /usr/lib/modules | grep -w ro
+findmnt -n -o OPTIONS /usr/lib/firmware | grep -w ro
+test -s /lib/modules/$(uname -r)/modules.dep
+modprobe btrfs
+test -d /sys/module/btrfs
+zxs-recovery status
+if zxs-recovery save; then exit 1; fi
+if zxs-prepare-boot-update; then exit 1; fi
+! grub-editenv /boot/grub/grubenv list | grep -q 'next_entry=zxs-recovery'
+test "$(cat /etc/zxs/boot-test-persistence)" = '{nonce}'
+/mnt/zxs-test/usb-keyboard
+mv /var/tmp/zxs-test-hidden-vmlinuz /vmlinuz
+# Keep the read-only recovery mounts until shutdown. udev may retain mapped
+# module indexes; the disposable test disk is discarded after validation.
+'''
             script += f"uname -r; ip -4 addr; printf '\\n{marker}\\n'; sync; poweroff\n"
             console.send('sh -c ' + shlex.quote(script))
             measured = console.expect(metric_pattern(metrics_marker), timeout=30)
@@ -455,9 +477,33 @@ systemctl is-enabled apt-daily-upgrade.timer | grep -qx masked
     if stage == 1:
         script += f'''logger 'ZXS_PERSISTENT_JOURNAL_{nonce}'
 journalctl --sync
+sha256sum /boot/initrd.img-$(uname -r) /boot/efi/EFI/BOOT/BOOTX64.EFI > /var/tmp/zxs-test-boot.sha256
+umount /boot/efi
 apt-get --yes install /mnt/zxs-test/zxs-apt-test.deb
 dpkg-query -W zxs-apt-test
 test "$(cat /usr/share/zxs-apt-test/marker)" = offline-package-test
+if apt-get --yes install /mnt/zxs-test/firmware-zxs-test.deb; then exit 1; fi
+! dpkg-query -W -f='${{db:Status-Status}}' firmware-zxs-test 2>/dev/null | grep -qx installed
+mount /boot/efi
+sha256sum -c /var/tmp/zxs-test-boot.sha256
+# Count actual Debian initramfs invocations during an official kernel reinstall.
+cp -p /usr/sbin/update-initramfs /var/tmp/zxs-test-update-initramfs
+cat > /usr/sbin/update-initramfs <<'WRAPPER'
+#!/bin/sh
+printf '%s\\n' "$*" >> /var/tmp/zxs-test-initramfs-calls
+exec /var/tmp/zxs-test-update-initramfs "$@"
+WRAPPER
+chmod 755 /usr/sbin/update-initramfs
+apt-get --yes --reinstall install /mnt/zxs-test/kernel.deb
+mv /var/tmp/zxs-test-update-initramfs /usr/sbin/update-initramfs
+test "$(grep -c '^-c -k ' /var/tmp/zxs-test-initramfs-calls)" = 1
+! grep -q '^-u ' /var/tmp/zxs-test-initramfs-calls
+test -s /boot/zxs-recovery/current/modules/$(uname -r)/modules.dep
+test -s /boot/zxs-recovery/current/firmware/xe/lnl_guc_70.bin
+apt-get --yes install /mnt/zxs-test/firmware-zxs-test.deb
+test ! -e /usr/lib/firmware/zxs-test-removed.bin
+grep -qx initramfs=yes /var/lib/zxs/update/last-actions
+grep -qx bootloader=no /var/lib/zxs/update/last-actions
 test -s /boot/efi/EFI/BOOT/BOOTX64.EFI
 '''
     else:
@@ -466,9 +512,29 @@ test "$(cat /usr/share/zxs-apt-test/marker)" = offline-package-test
 dpkg-query -W zxs-apt-test
 apt-get --yes purge zxs-apt-test
 test ! -e /usr/share/zxs-apt-test/marker
+apt-get --yes purge firmware-zxs-test
+test ! -e /usr/lib/firmware/zxs-test-removed.bin
 '''
     script += '''test -z "$(find /lib/modules -name 'virtio_net.ko*' -o -name 'e1000e.ko*')"
 test -z "$(systemctl --failed --no-legend --plain)"
+'''
+    if stage == 2:
+        script += '''zxs-diagnose /var/tmp/zxs-test-diagnostics.tar.gz
+test "$(stat -c %a /var/tmp/zxs-test-diagnostics.tar.gz)" = 600
+sha256sum /var/tmp/zxs-test-diagnostics.tar.gz > /var/tmp/zxs-test-diagnostic.sha256
+if zxs-diagnose /var/tmp/zxs-test-diagnostics.tar.gz; then exit 1; fi
+sha256sum -c /var/tmp/zxs-test-diagnostic.sha256
+mkdir /var/tmp/zxs-test-diagnostics
+tar -xzf /var/tmp/zxs-test-diagnostics.tar.gz -C /var/tmp/zxs-test-diagnostics
+test -s /var/tmp/zxs-test-diagnostics/boot-time.txt
+test -s /var/tmp/zxs-test-diagnostics/nvme0-health.txt
+! grep -r -E 'BEGIN .*PRIVATE KEY|^root:[!*]?[[:alnum:]/.$]{20}' /var/tmp/zxs-test-diagnostics
+zxs-health-check
+systemctl is-enabled fstrim.timer | grep -qx enabled
+systemctl is-enabled zxs-health.timer | grep -qx enabled
+zxs-recovery boot-once
+mv /vmlinuz /var/tmp/zxs-test-hidden-vmlinuz
+mv /lib/modules/$(uname -r) /var/tmp/zxs-test-hidden-modules
 '''
     return script
 
@@ -479,8 +545,10 @@ def make_debian_fixture(folder):
     shutil.copytree(OUTPUT / 'test-modules', tree)
     (tree / 'console').write_text('''#!/bin/sh
 set -eu
-cp -a /mnt/zxs-test/lib/modules/. /lib/modules/
-depmod -a
+if ! grep -qw zxs.recovery=1 /proc/cmdline; then
+    cp -a /mnt/zxs-test/lib/modules/. /lib/modules/
+    depmod -a
+fi
 modprobe virtio_console
 for attempt in $(seq 1 30); do
     test ! -e /dev/virtio-ports/zxs-test || break
@@ -500,9 +568,21 @@ exec /bin/sh -i <&3 >&3 2>&1
     (package / 'usr/share/zxs-apt-test').mkdir(parents=True)
     (package / 'usr/share/zxs-apt-test/marker').write_text('offline-package-test\n')
     subprocess.run(['dpkg-deb', '--build', '--root-owner-group', str(package), str(tree / 'zxs-apt-test.deb')], check=True)
+    shutil.rmtree(package)
+    (package / 'DEBIAN').mkdir(parents=True)
+    (package / 'DEBIAN/control').write_text('Package: firmware-zxs-test\nVersion: 1.0\nArchitecture: all\nMaintainer: ZXS build test\nDescription: Offline firmware hook validation fixture\n')
+    (package / 'usr/lib/firmware').mkdir(parents=True)
+    (package / 'usr/lib/firmware/zxs-test-removed.bin').write_text('This test file must be removed by the hardware policy.\n')
+    subprocess.run(['dpkg-deb', '--build', '--root-owner-group', str(package), str(tree / 'firmware-zxs-test.deb')], check=True)
+    kernel = next(p for p in json.loads((OUTPUT / 'packages.json').read_text())
+                  if p['name'].startswith('linux-image-') and p['name'] != 'linux-image-amd64')
+    options = ['-o', 'Acquire::https::CaInfo=/run/zxs-build-ca.pem', '-o', 'Acquire::Retries=2']
+    subprocess.run(['apt-get', *options, 'update'], check=True)
+    subprocess.run(['apt-get', *options, 'download', kernel['name'] + '=' + kernel['version']], cwd=tree, check=True)
+    next(tree.glob('linux-image-*.deb')).rename(tree / 'kernel.deb')
     image = folder / 'fixture.img'
     with image.open('wb') as stream:
-        stream.truncate(32 * 1024**2)
+        stream.truncate(256 * 1024**2)
     subprocess.run(['mke2fs', '-q', '-F', '-t', 'ext4', '-d', str(tree), str(image)], check=True)
 
 
@@ -548,17 +628,21 @@ def main():
         if VARIANT == 'debian':
             passed.append('Unmodified factory image: VGA/USB keyboard password setup and login, xHCI USB rescue media, physical serial and PS/2 disabled, no legacy USB/optical modules')
             passed.append('NVMe root; actual USB HID key input; UTC; complete apt/dpkg; disabled automatic updates')
-            passed.append('Offline APT install, cold reboot through regenerated initramfs/EFI loader, package persistence and purge; hardware policy reapplied')
+            passed.append('Unrelated offline APT install without mounted EFI leaves boot files unchanged; boot-package preflight blocks before mutation')
+            passed.append('Official kernel package reinstall invokes initramfs creation once; firmware update reapplies policy and regenerates initramfs without rebuilding EFI')
+            passed.append('Private diagnostic archive with boot timing and NVMe health; daily health and weekly TRIM timers')
             passed.append('Persistent journal retains a diagnostic marker from the previous boot')
+            timings.append(boot(3, folder, password, nonce, server.server_port))
+            passed.append('Third UEFI boot selects preserved kernel through one-shot GRUB entry despite missing normal kernel link and modules; read-only preserved modules/firmware; USB login and module loading')
         passed.append('Root password, initialization state and test data survive a cold reboot')
         passed.append('HTTPS certificate and private key persist; HTTPS starts automatically after a cold reboot')
         path = report('boot-test', {
             'status': 'passed', 'checks': passed, 'artifacts': identity,
             'timings': timings,
-            'timing_scope': ('QEMU TCG with VGA OCR and USB input; prompt recognition overhead included; two boots, not a hardware benchmark'
+            'timing_scope': ('QEMU TCG with VGA OCR and USB input; prompt recognition overhead included; three boots including recovery, not a hardware benchmark'
                              if VARIANT == 'debian' else
                              'QEMU TCG wall time from process launch to first console prompt; two boots, not a hardware benchmark'),
-            'logs': [str(folder / f'boot-{stage}.log') for stage in (1, 2)],
+            'logs': [str(folder / f'boot-{stage}.log') for stage in ((1, 2, 3) if VARIANT == 'debian' else (1, 2))],
             'network_test_scope': ('Virtual NIC drivers on separate test media, injected into test copy; factory disk contains only thunderbolt-net'
                                    if VARIANT == 'debian' else 'QEMU virtual wired NICs'),
             'unrun_physical_checks': (['288V Xe DP output', 'Thunderbolt/USB4 host-to-host link and hotplug',

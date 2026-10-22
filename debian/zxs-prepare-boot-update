@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+mountpoint -q /boot/efi || { echo 'Mount /boot/efi before changing boot packages.' >&2; exit 1; }
+if grep -qw zxs.recovery=1 /proc/cmdline; then
+    echo 'Boot the normal or current-kernel rescue entry before changing boot packages.' >&2
+    exit 1
+fi
+# Never replace a working checkpoint with files installed since this boot.
+if [ -f /run/zxs-booted.sha256 ] && sha256sum -c --status /run/zxs-booted.sha256; then
+    /usr/sbin/zxs-recovery save
+else
+    echo 'Keeping the existing recovery copy; current boot files have not been booted.' >&2
+fi

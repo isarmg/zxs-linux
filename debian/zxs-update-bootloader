@@ -6,7 +6,7 @@ mkdir -p "$directory"
 temporary=$(mktemp "$directory/.BOOTX64.XXXXXX")
 trap 'rm -f "$temporary"' EXIT HUP INT TERM
 grub-mkstandalone -O x86_64-efi -o "$temporary" \
-    --modules='part_gpt ext2 fat search search_fs_uuid linux normal all_video' \
+    --modules='part_gpt ext2 fat search search_fs_uuid linux normal all_video loadenv' \
     boot/grub/grub.cfg=/etc/zxs/grub.cfg
 mv -f "$temporary" "$directory/BOOTX64.EFI"
 sync

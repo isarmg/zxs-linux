@@ -1,0 +1,45 @@
+#!/bin/sh
+# Collect bounded, selected system information. Never archive /etc or TLS keys.
+set -eu
+umask 077
+[ "$(id -u)" -eq 0 ] || { echo 'Run as root.' >&2; exit 1; }
+destination=${1:-/var/tmp/zxs-diagnostics-$(date -u +%Y%m%dT%H%M%SZ).tar.gz}
+case "$destination" in /*) ;; *) destination="$PWD/$destination" ;; esac
+[ ! -e "$destination" ] && [ ! -L "$destination" ] || {
+    echo 'Diagnostic output already exists; choose a new filename.' >&2; exit 1;
+}
+folder=$(mktemp -d /var/tmp/zxs-diagnose.XXXXXX)
+output=
+trap 'rm -rf "$folder"; [ -z "$output" ] || rm -f "$output"' EXIT HUP INT TERM
+collect() {
+    name=$1; shift
+    { timeout 20 "$@" || printf '\nCommand unavailable, timed out, or returned an error.\n'; } > "$folder/$name.txt" 2>&1
+}
+collect system sh -c 'date -u; uname -a; cat /etc/zxs-release /etc/debian_version /proc/cmdline; uptime; free -h; df -h; findmnt; zxs-recovery status'
+collect packages dpkg-query -W
+collect services systemctl --failed --no-pager --full
+collect boot-time systemd-analyze time
+collect boot-chain systemd-analyze critical-chain
+collect journal-current journalctl -b --no-pager -n 2000
+collect journal-previous journalctl -b -1 --no-pager -n 2000
+collect kernel dmesg --color=never
+collect network sh -c 'ip -4 addr; ip -4 route; ip -s link'
+collect pci lspci -nnk
+collect usb lsusb -t
+collect thunderbolt sh -c 'for node in /sys/bus/thunderbolt/devices/*; do [ -d "$node" ] || continue; printf "\n%s\n" "$node"; for key in device_name vendor_name authorized security generation rx_speed tx_speed; do [ ! -r "$node/$key" ] || { printf "%s=" "$key"; cat "$node/$key"; }; done; done'
+collect nvme-list nvme list
+for device in /dev/nvme[0-9]; do
+    [ -c "$device" ] || continue
+    collect "${device##*/}-health" nvme smart-log "$device"
+done
+collect certificate openssl x509 -in /etc/zxs/https/server.pem -noout -subject -issuer -dates -ext subjectAltName
+collect maintenance sh -c 'systemctl list-timers --all --no-pager; cat /var/lib/zxs/update/last-actions; sha256sum /etc/zxs/hardware/*'
+printf '%s\n' 'Logs may contain IP addresses, device serial numbers, and application messages. Review before sharing. Password databases and private-key files are not collected.' > "$folder/README.txt"
+# Publish a new file without following or overwriting a pre-existing path.
+output=$(mktemp "$destination.XXXXXX")
+tar -czf "$output" -C "$folder" .
+chmod 600 "$output"
+ln -T "$output" "$destination"
+rm -f "$output"
+output=
+printf '%s\n' "$destination"

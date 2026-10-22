@@ -1,7 +1,38 @@
 #!/bin/sh
 set -eu
-# Runtime transactions must refresh the mounted EFI partition as well.
-mountpoint -q /boot/efi || { echo 'Mount /boot/efi before updating packages.' >&2; exit 1; }
-/usr/sbin/zxs-hardware-trim all
-/usr/sbin/update-initramfs -u -k all
-/usr/sbin/zxs-update-bootloader
+umask 077
+mkdir -p /run/lock
+exec 9>/run/lock/zxs-boot-refresh.lock
+flock -x 9
+state=/var/lib/zxs/update
+mkdir -p "$state"
+temporary=$(mktemp -d "$state/.pending.XXXXXX")
+trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+# Compare installed versions and policy inputs, not all package transactions.
+dpkg-query -W -f='${binary:Package} ${Version} ${db:Status-Status}\n' |
+    LC_ALL=C sort > "$temporary/packages"
+grep -E '^(firmware-|intel-microcode )' "$temporary/packages" > "$temporary/firmware" || :
+sha256sum /etc/zxs/hardware/* /usr/sbin/zxs-hardware-trim >> "$temporary/firmware"
+grep -E '^(grub-)' "$temporary/packages" > "$temporary/loader" || :
+sha256sum /etc/zxs/grub.cfg /usr/sbin/zxs-update-bootloader >> "$temporary/loader"
+grep -E '^(linux-image-|initramfs-tools)' "$temporary/packages" > "$temporary/kernel" || :
+if [ "${1:-}" = --record-state ]; then
+    cp "$temporary/firmware" "$temporary/loader" "$temporary/kernel" "$state/"
+    exit 0
+fi
+[ "${1:-}" = '' ] || [ "$1" = --force ] || { echo 'Usage: zxs-post-package-update [--force]' >&2; exit 2; }
+refresh=no
+loader=no
+if ! cmp -s "$temporary/firmware" "$state/firmware" || [ "${1:-}" = --force ]; then refresh=yes; fi
+if ! cmp -s "$temporary/loader" "$state/loader" || [ "${1:-}" = --force ]; then loader=yes; fi
+if [ "$refresh" = no ] && [ "$loader" = no ] && cmp -s "$temporary/kernel" "$state/kernel"; then exit 0; fi
+mountpoint -q /boot/efi || { echo 'Mount /boot/efi, then rerun zxs-post-package-update.' >&2; exit 1; }
+if [ "$refresh" = yes ]; then
+    /usr/sbin/zxs-hardware-trim all
+    /usr/sbin/update-initramfs -u -k all
+fi
+# GRUB resolves /vmlinuz and the recovery path at boot; kernel-only updates
+# do not require rebuilding an otherwise identical EFI executable.
+if [ "$loader" = yes ]; then /usr/sbin/zxs-update-bootloader; fi
+printf 'initramfs=%s\nbootloader=%s\n' "$refresh" "$loader" > "$state/last-actions"
+cp "$temporary/firmware" "$temporary/loader" "$temporary/kernel" "$state/"
