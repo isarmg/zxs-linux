@@ -90,13 +90,13 @@ systemd 版在设备服务停止期间触发设备事件，再重启原生 coldp
 
 ## 发布
 
-已验证镜像的发布入口为 `scripts/publish-release.sh v0.6.0`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，分别完成两套 Buildroot 的 `package`／`legal-info` 和 Debian 的对应阶段。发布脚本核验三个交付目录的 SHA256 与独立测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
+已验证镜像的发布入口为 `scripts/publish-release.sh v0.6.1`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，分别完成两套 Buildroot 的 `package`／`legal-info` 和 Debian 的对应阶段。发布脚本核验三个交付目录的 SHA256 与独立测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
 
 GitHub Actions 的 `Build and publish release` 流程会在推送 `v*` 标签时，分别构建 BusyBox init、裁剪 systemd 和 Debian 三版，执行各自的镜像检查、两次 UEFI 启动测试和打包。main 分支预热可供标签读取的构建缓存；Debian 额外验证第三次恢复启动。三版均成功后才发布同一个 Release；失败时保留各自日志，公开 Release 前必须完成全部附件上传。每版都附带自己的源码／许可证档案；刷机只需下载所选版本的 `disk.img.xz` 和对应 `SHA256SUMS`，注意 systemd／Debian 的文件名前缀。流程在 Debian 13 容器中构建，构建任务只有读取仓库权限，独立发布任务使用 GitHub 内置令牌。也可在 Actions 页面手动运行，指定一个已存在且尚未发布的版本标签。
 
 ```sh
-git tag -a v0.6.0 -m 'ZXS Linux v0.6.0: Debian boot recovery, selective update hooks and local diagnostics'
-git push origin main v0.6.0
+git tag -a v0.6.1 -m 'ZXS Linux v0.6.1: Debian boot recovery, selective update hooks and local diagnostics'
+git push origin main v0.6.1
 ```
 
 `Supplement existing release toolchain sources` 手动流程可为早期发布附加完整 SDK 源码和许可证（含独立 SHA256）；新版本的常规 `legal-info` 已将这些组件一并收集。

@@ -81,7 +81,7 @@ static ip_address=192.168.88.1/30
 
 另一台使用 `192.168.88.2/30`，选择与现有网络不冲突的地址。纯直连不配置默认网关或 DNS。本地执行 `systemctl restart dhcpcd` 应用。默认仍使用 DHCP／IPv4LL，没有新增网络管理进程。
 
-系统仍使用 UTC，未启用联网校时。部署时从可信时钟设置 `date -u -s 'YYYY-MM-DD HH:MM:SS'`，用 `hwclock --systohc --utc` 写回 RTC；离线设备定期核对时钟。需要局域网 NTP 时再配置可信的局域网服务端和校时客户端。证书告警可用 `journalctl -t zxs-health` 查看；每日检查不会续期证书。
+系统仍使用 UTC，未启用联网校时。部署时从可信时钟设置 `timedatectl set-time 'YYYY-MM-DD HH:MM:SS'`，由系统同时更新系统时钟和 RTC；离线设备定期核对时钟。需要局域网 NTP 时再配置可信的局域网服务端和校时客户端。证书告警可用 `journalctl -t zxs-health` 查看；每日检查不会续期证书。
 
 实机先保存 `systemd-analyze time`、`systemd-analyze critical-chain` 和诊断包，记录断电冷启动／重启到 tty1 以及网络可用的时间，检查 DP、USB 键盘／存储和雷电热插拔、断线重连、NVMe 温度／错误。当前保留 `MODULES=most`、gzip、fsck、CPU 微码及电源／散热管理；未获得 288V 实机数据前不改用构建机推导的模块列表或删除恢复工具。
 
