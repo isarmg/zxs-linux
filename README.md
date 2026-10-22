@@ -1,11 +1,11 @@
 # ZXS Linux base
 
-独立的 amd64／UEFI 精简 Linux。当前版本不包含 ZXS 或反向代理。
+独立的 amd64／UEFI 精简 Linux。当前版本不包含 ZXS；系统通过 stunnel 提供局域网 HTTPS。
 
 ## 组成
 
 - Buildroot **2026.08**、Linux **6.18.58**、Bootlin x86-64 glibc stable **2025.08-1**。
-- BusyBox init、eudev、IPv4 DHCP／IPv4LL、curl／CA 证书、iproute2、ethtool、lspci、lsusb。
+- BusyBox init、eudev、IPv4 DHCP／IPv4LL、curl／CA 证书、OpenSSL／stunnel、iproute2、ethtool、lspci、lsusb。
 - Intel i915／Xe、AMD AMDGPU 的 KMS 与固件，DP 本地字符终端；没有桌面、音频、Wi-Fi 或蓝牙栈。
 - 雷电／USB4 网络及 PCIe 热插拔；常见 Intel、Realtek、Aquantia、Broadcom PCIe 网卡，以及 Realtek、ASIX、CDC NCM、AQC111 USB 网卡驱动。
 - 网口独立使用 IPv4 DHCP，无 DHCP 的点对点链路回退至 169.254/16 链路本地地址；不启用桥接、IP 转发、NAT 或 DHCP 服务端。
@@ -37,7 +37,30 @@
 
 GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用固定 PARTUUID 寻找根分区，不依赖 `/dev/sda`／`/dev/nvme0n1` 等设备名。此布局是硬件未定时的默认值，可在 `board/genimage.cfg` 和 defconfig 中调整。
 
-通过 x86_64 UEFI 从磁盘镜像启动，启动要求 Secure Boot 关闭；本地屏幕使用 `tty1`，另有 `115200 8N1` 的 `ttyS0` 调试终端。首次启动必须在本地终端设置 root 密码，随后使用 `root` 和该密码登录；密码及配置保存在根分区。镜像没有 SSH、Telnet 或 Web 管理服务。
+通过 x86_64 UEFI 从磁盘镜像启动，启动要求 Secure Boot 关闭；本地屏幕使用 `tty1`，另有 `115200 8N1` 的 `ttyS0` 调试终端。首次启动必须在本地终端设置 root 密码，随后使用 `root` 和该密码登录；密码及配置保存在根分区。镜像没有 SSH、Telnet 或 Web 管理应用；配置证书后可启用 HTTPS 转发入口。
+
+## 局域网 HTTPS
+
+系统负责 TLS，链路为 `客户端 → HTTPS :443 → stunnel → HTTP 127.0.0.1:8080 → ZXS`。ZXS 只需监听本机 HTTP 端口；当前基础镜像不包含 ZXS，必须另行安装并启动应用。stunnel 使用 TLS 1.2／1.3，读取证书和绑定端口后以 nobody 用户运行。无需公网域名、ACME 或互联网证书服务。
+
+在设备本地以 root 登录，导入自定义 PEM 证书链和无密码私钥：
+
+```sh
+zxs-https install /path/server-chain.pem /path/server-key.pem
+```
+
+也可以在设备上生成有效期 365 天的独立自签名证书。以下名称和地址须替换为实际值，至少提供一个 `DNS:` 或 `IP:` 参数：
+
+```sh
+zxs-https generate DNS:zxs.lan IP:192.168.1.50
+zxs-https certificate > /path/server.crt  # 仅导出公有证书
+```
+
+命令会检查证书是否过期、私钥是否有效且匹配，再原子替换凭据并重启服务。凭据保存在 `/etc/zxs/https/server.pem`（目录 0700、文件 0600），冷启动后自动恢复 HTTPS。每台设备本地生成自己的私钥，出厂镜像不含证书或私钥；未配置凭据时不会启动 HTTPS。到期前重新执行生成或导入命令完成更新。
+
+客户端需要信任该自签名证书，或者信任签发自定义证书的 CA。证书 SAN 必须包含访问时使用的域名／IP；建议在 DHCP 中保留设备地址。使用域名时需配置局域网 DNS 或客户端 hosts，系统不自动发布该域名。签发、检查及访问证书前应确保系统时间正确。
+
+默认端口可在 `/etc/stunnel/stunnel.conf` 调整，修改后执行 `/etc/init.d/S50stunnel restart`。保持后端使用 `127.0.0.1`。stunnel 透传 TCP，不添加 HTTP 转发头；ZXS 如需生成绝对链接或重定向，应将应用的外部访问地址配置为实际 HTTPS 地址。
 
 交付目录 `dist/zxs-linux-amd64/` 包含：
 
@@ -45,7 +68,7 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 - `bzImage`、实际 Buildroot／Linux 配置及 `packages.json` 版本／许可清单。
 - `validation.json`、`SHA256SUMS` 和本工程的 `build-sources.tar.gz`。
 
-`./build.sh test` 对镜像副本执行 QEMU TCG／OVMF UEFI 冷启动、首次密码设置、密码登录、帧缓冲控制台绑定与终端写入、IPv4 DHCP、到宿主测试服务的 HTTP 请求、独立 e1000e 网卡的 IPv4LL 回退、关闭转发、延迟 udev 启动后的设备重枚举与网络恢复，以及第二次冷启动后的数据持久化检查。出厂镜像不包含测试密码或初始化状态。测试必须成功，且镜像摘要仍一致，才允许 `package`。
+`./build.sh test` 对镜像副本执行 QEMU TCG／OVMF UEFI 冷启动、首次密码设置、密码登录、帧缓冲控制台绑定与终端写入、IPv4 DHCP、到宿主测试服务的 HTTP 请求、独立 e1000e 网卡的 IPv4LL 回退、关闭转发、延迟 udev 启动后的设备重枚举与网络恢复，以及第二次冷启动后的数据持久化检查。它还验证无证书时跳过 HTTPS、证书生成与导入、拒绝不匹配私钥、TLS 1.2／1.3 到本机 HTTP 的实际请求、DNS／IP SAN、拒绝未知证书和错误域名、服务降权、权限及证书跨重启持久化。HTTP 测试后端只下载到测试镜像副本。出厂镜像不包含测试密码、私钥或初始化状态。测试必须成功，且镜像摘要仍一致，才允许 `package`。
 
 核显 DP 输出、真实雷电／USB4 链路、PCIe／USB 网卡吞吐及热插拔需在最终硬件上验收。雷电 PCIe 隧道的授权由硬件安全设置控制；系统不自动授权未知设备。
 
@@ -53,7 +76,7 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 
 ## 发布
 
-已验证镜像的发布入口为 `scripts/publish-release.sh v0.1.1`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，再执行 `./build.sh package` 和 `./build.sh legal-info`。发布脚本核验所有交付文件的 SHA256 与测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
+已验证镜像的发布入口为 `scripts/publish-release.sh v0.2.0`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，再执行 `./build.sh package` 和 `./build.sh legal-info`。发布脚本核验所有交付文件的 SHA256 与测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
 
 GitHub Actions 的 `Build and publish release` 流程会在推送 `v*` 标签时自动执行完整构建、镜像检查、两次 UEFI 启动测试、打包和发布；失败时保留日志，公开 Release 前必须完成全部附件上传。流程在 Debian 13 容器中构建，构建任务只有读取仓库权限，独立发布任务使用 GitHub 内置令牌。也可在 Actions 页面手动运行，指定一个已存在且尚未发布的版本标签。
 

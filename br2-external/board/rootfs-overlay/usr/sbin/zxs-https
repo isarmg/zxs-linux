@@ -1,0 +1,77 @@
+#!/bin/sh
+# Manage device-local HTTPS credentials; never include private keys in the image.
+set -eu
+umask 077
+
+usage() {
+    echo 'Usage: zxs-https generate DNS:name [IP:address ...]' >&2
+    echo '       zxs-https install CERTIFICATE_CHAIN.pem PRIVATE_KEY.pem' >&2
+    echo '       zxs-https certificate  # export the public leaf certificate' >&2
+    exit 2
+}
+
+[ "$(id -u)" = 0 ] || { echo 'Run as root on the device.' >&2; exit 1; }
+action=${1:-}
+[ "$#" -gt 0 ] || usage
+shift
+directory=/etc/zxs/https
+if [ "$action" = certificate ]; then
+    [ "$#" = 0 ] || usage
+    exec openssl x509 -in "$directory/server.pem" -outform PEM
+fi
+case "$action" in
+    generate) [ "$#" -ge 1 ] || usage ;;
+    install) [ "$#" = 2 ] || usage ;;
+    *) usage ;;
+esac
+
+mkdir -p "$directory"
+chmod 0700 "$directory"
+mkdir /run/zxs-https-update.lock 2>/dev/null || {
+    echo 'Another certificate update is running.' >&2; exit 1;
+}
+staging=
+cleanup() {
+    [ -z "$staging" ] || rm -rf "$staging"
+    rmdir /run/zxs-https-update.lock
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+staging=$(mktemp -d "$directory/.update.XXXXXX")
+
+if [ "$action" = generate ]; then
+    sans=
+    for name in "$@"; do
+        case "$name" in
+            DNS:*) printf '%s\n' "${name#DNS:}" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' || usage ;;
+            IP:*) printf '%s\n' "${name#IP:}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || usage ;;
+            *) usage ;;
+        esac
+        sans=${sans:+$sans,}$name
+    done
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -noenc -sha256 -days 365 -subj /CN=ZXS-LAN \
+        -addext "subjectAltName=$sans" \
+        -addext 'basicConstraints=critical,CA:FALSE' \
+        -addext 'keyUsage=critical,digitalSignature' \
+        -addext 'extendedKeyUsage=serverAuth' \
+        -keyout "$staging/key.pem" -out "$staging/cert.pem"
+else
+    cp "$1" "$staging/cert.pem"
+    cp "$2" "$staging/key.pem"
+fi
+
+# Validate before replacing the live bundle, including unencrypted key matching.
+openssl x509 -in "$staging/cert.pem" -checkend 0 -noout
+openssl pkey -in "$staging/key.pem" -passin pass: -check -noout
+openssl x509 -in "$staging/cert.pem" -pubkey -noout > "$staging/cert.pub"
+openssl pkey -in "$staging/key.pem" -passin pass: -pubout > "$staging/key.pub"
+cmp -s "$staging/cert.pub" "$staging/key.pub" || {
+    echo 'Certificate and private key do not match; current certificate unchanged.' >&2
+    exit 1
+}
+cat "$staging/cert.pem" "$staging/key.pem" > "$staging/server.pem"
+chmod 0600 "$staging/server.pem"
+mv -f "$staging/server.pem" "$directory/server.pem"
+/etc/init.d/S50stunnel restart
+echo 'HTTPS enabled. Export the public certificate with: zxs-https certificate'

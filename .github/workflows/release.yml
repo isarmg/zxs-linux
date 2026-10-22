@@ -76,7 +76,7 @@ jobs:
         run: docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh build
       - name: Verify boot media and required capabilities
         run: docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh verify
-      - name: Test two UEFI boots and delayed udev coldplug recovery
+      - name: Test two UEFI boots, LAN HTTPS and delayed udev recovery
         run: docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh test
       - name: Package validated artifacts and complete corresponding sources
         run: |

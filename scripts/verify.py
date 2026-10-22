@@ -42,8 +42,20 @@ try:
             'First-boot console initialization is executable')
     require((target / 'etc/init.d/S11udev-coldplug').stat().st_mode & 0o111 != 0,
             'Coldplug readiness synchronization is installed and executable')
-    for binary in ('sbin/dhcpcd', 'sbin/ip', 'usr/bin/curl'):
+    for binary in ('sbin/dhcpcd', 'sbin/ip', 'usr/bin/curl', 'usr/bin/openssl', 'usr/bin/stunnel',
+                   'usr/sbin/zxs-https'):
         require((target / binary).exists(), f'Installed user-space tool: {binary}')
+    require((target / 'etc/init.d/S50stunnel').stat().st_mode & 0o111 != 0,
+            'System HTTPS initialization is executable')
+    tls_config = (target / 'etc/stunnel/stunnel.conf').read_text()
+    require(all(line in tls_config.splitlines() for line in
+                ('sslVersionMin = TLSv1.2', 'accept = 0.0.0.0:443', 'connect = 127.0.0.1:8080',
+                 'cert = /etc/zxs/https/server.pem', 'setuid = nobody', 'setgid = nobody')),
+            'HTTPS terminates TLS 1.2+ and forwards to a loopback backend with dropped privileges')
+    require(not (target / 'etc/zxs/https/server.pem').exists(), 'Factory HTTPS credentials are absent')
+    require(not any(b'PRIVATE KEY-----' in p.read_bytes() for p in (target / 'etc').rglob('*')
+                    if p.is_file()), 'Factory /etc contains no shared private key')
+    require(not (target / 'root/zxs-test-http').exists(), 'HTTP test fixture is excluded from factory image')
     for firmware in ('amdgpu', 'i915', 'xe', 'rtl_nic'):
         require((target / 'lib/firmware' / firmware).is_dir(), f'Installed firmware family: {firmware}')
     require('zxs=absent' in (target / 'etc/zxs-release').read_text(), 'ZXS is excluded')

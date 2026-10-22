@@ -12,12 +12,20 @@ import sys
 import threading
 import time
 
-from common import CACHE, OUTPUT, WORK, artifact_identity, report, require_current_report
+from common import CACHE, OUTPUT, ROOT, WORK, artifact_identity, report, require_current_report
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    backend_payload = b''
+
     def do_GET(self):
-        payload = b'zxs-linux-network-ok\n'
+        if self.path == '/test-backend':
+            payload = self.backend_payload
+        elif self.path == '/readiness':
+            payload = b'zxs-linux-network-ok\n'
+        else:
+            self.send_error(404)
+            return
         self.send_response(200)
         self.send_header('Content-Length', str(len(payload)))
         self.end_headers()
@@ -138,6 +146,39 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
 grep -qx 'zxs=absent' /etc/zxs-release
 '''
             if stage == 1:
+                script += f'''test ! -e /etc/zxs/https/server.pem
+/etc/init.d/S50stunnel start
+test ! -e /run/zxs-https/stunnel.pid
+curl --fail --silent --max-time 15 http://10.0.2.2:{port}/test-backend -o /root/zxs-test-http
+chmod 0700 /root/zxs-test-http
+zxs-https generate DNS:zxs-test.lan IP:127.0.0.1
+zxs-https certificate > /root/https-test.crt
+openssl pkey -in /etc/zxs/https/server.pem -out /tmp/valid-key.pem
+zxs-https install /root/https-test.crt /tmp/valid-key.pem
+sha256sum /etc/zxs/https/server.pem > /root/https-test.sha
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out /tmp/wrong-key.pem
+if zxs-https install /root/https-test.crt /tmp/wrong-key.pem; then exit 1; fi
+sha256sum -c /root/https-test.sha
+'''
+            else:
+                script += 'sha256sum -c /root/https-test.sha\n'
+            script += '''find /etc/zxs/https -maxdepth 0 -perm 0700 | grep -q .
+find /etc/zxs/https/server.pem -maxdepth 0 -perm 0600 | grep -q .
+test -s /run/zxs-https/stunnel.pid
+https_pid=$(cat /run/zxs-https/stunnel.pid)
+/etc/init.d/S50stunnel start
+test "$(cat /run/zxs-https/stunnel.pid)" = "$https_pid"
+awk '/^Uid:/ { if ($2 != 65534) exit 1; found=1 } END { if (!found) exit 1 }' /proc/"$https_pid"/status
+/root/zxs-test-http &
+for i in $(seq 1 10); do curl --fail --silent --max-time 2 http://127.0.0.1:8080/ >/dev/null && break; sleep 1; done
+for version in 1.2 1.3; do
+    test "$(curl --fail --silent --show-error --max-time 15 --tlsv$version --tls-max $version --cacert /root/https-test.crt https://127.0.0.1/)" = 'zxs-linux-https-ok'
+done
+test "$(curl --fail --silent --show-error --max-time 15 --resolve zxs-test.lan:443:127.0.0.1 --cacert /root/https-test.crt https://zxs-test.lan/)" = 'zxs-linux-https-ok'
+if curl --fail --silent --max-time 10 https://127.0.0.1/ >/dev/null; then exit 1; fi
+if curl --fail --silent --max-time 10 --resolve wrong.lan:443:127.0.0.1 --cacert /root/https-test.crt https://wrong.lan/ >/dev/null; then exit 1; fi
+'''
+            if stage == 1:
                 script += '''printf 'Testing delayed udev coldplug recovery\\n'
 killall dhcpcd
 sleep 1
@@ -208,6 +249,10 @@ def main():
     (folder / 'OVMF_VARS.fd').unlink(missing_ok=True)
     password = 'Test-' + secrets.token_urlsafe(20)
     nonce = secrets.token_hex(12)
+    backend = folder / 'test-http-server'
+    subprocess.run([str(OUTPUT / 'host/bin/x86_64-linux-gcc'), '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(ROOT / 'scripts/test-http-server.c'), '-o', str(backend)], check=True)
+    Handler.backend_payload = backend.read_bytes()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -216,10 +261,13 @@ def main():
         for stage in (1, 2):
             boot(stage, folder, password, nonce, server.server_port)
             passed.append(f'UEFI disk boot {stage}, password login, framebuffer console, IPv4 DHCP, HTTP request, IPv4LL on isolated e1000e NIC, forwarding disabled')
+            passed.append(f'HTTPS boot {stage}: TLS 1.2/1.3 to loopback HTTP, trusted custom certificate, DNS/IP SAN verification, rejection of unknown certificate and wrong hostname, unprivileged TLS daemon')
             if stage == 1:
+                passed.append('HTTPS configuration: disabled without credentials, generate and import custom certificate, reject mismatched key without replacing certificate, private key permissions')
                 passed.append('Delayed udev startup: replay coldplug, autoload e1000e, restore DHCP/HTTP and IPv4LL')
             print(f'UEFI boot {stage}: passed')
         passed.append('Root password, initialization state and test data survive a cold reboot')
+        passed.append('HTTPS certificate and private key persist; HTTPS starts automatically after a cold reboot')
         path = report('boot-test', {
             'status': 'passed', 'checks': passed, 'artifacts': identity,
             'logs': [str(folder / f'boot-{stage}.log') for stage in (1, 2)],
