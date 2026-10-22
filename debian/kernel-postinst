@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+/usr/sbin/zxs-hardware-trim "${1:?Kernel version is required}"
+/usr/sbin/update-initramfs -u -k "$1"

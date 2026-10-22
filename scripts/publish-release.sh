@@ -50,13 +50,13 @@ amd64／UEFI 精简 Linux 基础系统，不包含 ZXS；系统通过 stunnel �
 - Buildroot 2026.08、Linux 6.18.58；保留 Intel／AMD 核显、USB4／雷电及有线网卡驱动。
 - 原版使用 BusyBox init + eudev，下载 `disk.img.xz` 和 `SHA256SUMS`。
 - 新增裁剪 systemd 258.7 + BusyBox 工具版本，下载 `systemd-disk.img.xz` 和 `systemd-SHA256SUMS`。保留原版，未加入 GNU coreutils。
-- 新增 Debian 13 最小化版本，保留官方 systemd、GNU 工具及 dash，加入 ext4/Btrfs 磁盘工具；不含 apt/dpkg 等设备端安装工具，以重建镜像方式更新。下载 `debian-disk.img.xz` 与 `debian-SHA256SUMS`。
+- Debian 13 版本面向 Intel Core Ultra 9 288V／Xe、NVMe 和雷电／USB4 两机直连，仅 IPv4、UTC；保留官方 systemd、GNU 工具、完整 apt/dpkg 和 ext4/Btrfs／排障工具，关闭自动更新，持久日志限额 64 MiB。下载 `debian-disk.img.xz` 与 `debian-SHA256SUMS`。
 - 三套镜像均为 64 MiB EFI + 1 GiB ext4。镜像只能选择其一写入同一设备。
 - 启动需要关闭 Secure Boot；首次在本地终端设置 root 密码。
 - HTTPS 默认转发至 `127.0.0.1:8080`；支持自定义证书或设备本地生成自签名证书，无需公网服务。配置命令见 README；出厂镜像不含私钥，未配置证书时入口不启动。
-- 两版分别通过镜像检查、两次 QEMU／OVMF UEFI 冷启动、密码登录、DHCP／IPv4LL／HTTP、设备重枚举恢复、TLS 1.2／1.3、证书校验及持久化测试。systemd 版额外验证原生服务及 HTTPS 进程被终止后的自动恢复。
+- 三版分别通过镜像检查、两次 QEMU／OVMF UEFI 冷启动、密码登录、DHCP／IPv4LL／HTTP、设备重枚举恢复、TLS 1.2／1.3、证书校验及持久化测试。systemd 版额外验证原生服务及 HTTPS 进程被终止后的自动恢复。
 - systemd 版关闭容器、休眠、远程日志及其他可选服务，journald 使用最多 8 MiB 的内存日志。启动计时记录于各自的 validation.json，仅代表 QEMU TCG 测试环境。
-- Debian 版通过两次 UEFI 启动、首次密码设置、网络、HTTPS、ext4 检查/扩容和 Btrfs 快照/scrub/只读检查及数据持久化测试；保留通用 Debian 内核，不编译裁剪官方二进制。
+- Debian 版使用 NVMe 根盘通过两次 UEFI 启动，验证 USB HID 实际按键、持久日志、离线 APT 安装／冷启动／卸载和启动文件更新，及 ext4/Btrfs 数据盘。只裁剪官方模块／固件文件；QEMU 网卡驱动放在独立测试介质，交付镜像仅保留 thunderbolt-net。
 - 实际核显 DP 输出、USB4 链路和网卡吞吐／热插拔仍需在最终硬件上验收。
 
 附内核、实际构建配置、包清单、构建脚本源码、对应上游源码／补丁／许可证及 SHA256 校验文件。完整使用说明见 README.md。

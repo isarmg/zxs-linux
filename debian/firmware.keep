@@ -1,0 +1,4 @@
+# Lunar Lake Xe GuC/HuC/GSC, Xe2 display DMC, and family 6/model BD microcode.
+^xe/lnl_(guc|huc|gsc)(_[0-9.]+)?\.bin(\.(xz|zst))?$
+^i915/xe2lpd_dmc\.bin(\.(xz|zst))?$
+^intel-ucode/06-bd-[0-9a-f][0-9a-f]$

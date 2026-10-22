@@ -1,0 +1,20 @@
+# Seed modules for Intel Lunar Lake, NVMe, ThunderboltIP, USB keyboard/recovery.
+# Dependencies are retained recursively. Denied subsystems also exclude seeds
+# whose dependencies require them (for example laptop audio integration).
+^kernel/arch/x86/(crypto|events|kernel|lib|mm|platform|power)/
+^kernel/crypto/
+^kernel/drivers/(acpi|cpufreq|cpuidle|thermal|powercap|hwmon|watchdog|rtc|firmware|pinctrl|gpio)/
+^kernel/drivers/platform/x86/
+^kernel/drivers/i2c/busses/i2c-(i801|designware|ismt)
+^kernel/drivers/gpu/drm/xe/
+^kernel/drivers/gpu/drm/tiny/(bochs|simpledrm)\.
+^kernel/drivers/thunderbolt/
+^kernel/drivers/net/thunderbolt/
+^kernel/drivers/usb/(host|storage|common)/
+^kernel/drivers/hid/(usbhid/|hid-generic\.|hid-(apple|microsoft|logitech|logitech-dj|logitech-hidpp)\.)
+^kernel/drivers/input/(evdev\.|serio/|keyboard/atkbd\.)
+^kernel/drivers/nvme/host/(nvme|nvme-core|nvme-auth)\.
+^kernel/drivers/scsi/(sd_mod|sr_mod|sg|scsi_mod|scsi_common)\.
+^kernel/drivers/virtio/
+^kernel/drivers/block/(virtio_blk|loop)\.
+^kernel/fs/(ext4|jbd2|mbcache|btrfs|fat|nls|autofs4)/

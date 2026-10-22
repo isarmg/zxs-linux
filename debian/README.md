@@ -1,21 +1,23 @@
-# Debian 最小化版本
+# Debian 13：Intel Core Ultra 9 288V 配置
 
-独立的 Debian **13 stable（trixie）／amd64／UEFI** 固定功能镜像，不包含 ZXS 应用。使用官方 systemd、GNU coreutils、dash、glibc、通用内核和预生成 initramfs。设备端不含 apt、dpkg 或其他软件包安装工具；更新通过重新构建并交付镜像完成。两套 Buildroot 镜像仍使用原配置。
+基于 Debian **13 stable（trixie）／amd64／UEFI**，面向 Intel Core Ultra 9 288V、Xe 核显和 NVMe 系统盘。不包含 ZXS 应用。保留官方 systemd、GNU coreutils、dash、APT／dpkg、Bash／Perl、initramfs 和 GRUB 更新工具，关闭自动更新。两套 Buildroot 镜像继续使用原配置。
 
-## 功能与裁剪
+## 硬件与系统配置
 
-- Intel／AMD 核显固件、通用 PCIe／USB 有线网卡、雷电／USB4 内核驱动；本地 tty1 字符终端和 115200 8N1 串口。
-- dhcpcd 为各有线网口独立配置 IPv4 DHCP／IPv4LL；关闭 IPv6 和 IP 转发，没有桥接、NAT 或 DHCP 服务端。
-- e2fsprogs、btrfs-progs、util-linux：ext4 创建、检查、修复和扩容，Btrfs 创建、子卷、快照、scrub、send／receive，GPT 分区和 UUID 挂载。
-- 沿用 `zxs-https`，stunnel 监听 443，转发至 `127.0.0.1:8080`。证书在设备上生成或导入，出厂没有私钥；用法见仓库主 README。
-- 不安装桌面、SSH 服务、NetworkManager、Wi-Fi／蓝牙用户态服务、sudo；关闭不使用的网络管理服务和自动磁盘维护定时器。
-- 不安装 Recommends／Suggests；构建完成后移除 apt、dpkg、包数据库、安装配置、Bash、Perl、GRUB 和 initramfs 生成工具、文档、翻译及缓存。预生成的启动器和 initramfs 保留，根用户使用 dash。
-- 构建包清单和完整许可证随交付文件单独归档。官方通用内核与 Intel／AMD 固件用于硬件型号未定的设备；驱动按需加载。
-- journald 使用内存日志，上限 8 MiB；没有额外常驻磁盘管理服务。
+- 保留 Lunar Lake Xe 显示、GuC／HuC／GSC／DMC 固件及 Intel 06-bd CPU 微码，本地 tty1 字符终端、USB 键盘、115200 8N1 串口。微码选择独立于构建机 CPU。
+- 系统盘为 NVMe；保留 ext4／Btrfs、USB 存储救援、少量虚拟磁盘／显示驱动。移除 SATA、其他显卡、声卡、无线／蓝牙、GNSS 定位及无关网络驱动模块与固件。
+- 网络仅保留 `thunderbolt-net`，用于两台设备通过雷电／USB4 线直连。开机加载协议，dhcpcd 为 `thunderbolt*` 接口配置 IPv4 DHCP 或 IPv4LL；没有 DHCP 服务端。两端均无 DHCP 时，使用各自 `169.254.*.*` 地址通信。
+- 仅启用 IPv4：内核命令行 `ipv6.disable=1`；关闭转发，没有 Linux 软件网桥或 NAT。雷电扩展坞 RJ45 网口不在本配置支持范围内。
+- 时区与硬件时钟采用 UTC。不安装 GeoClue／gpsd、桌面、SSH、NetworkManager、Wi-Fi／蓝牙用户态服务或 sudo。
+- `zxs-https` 管理自定义证书，stunnel 监听 443 并转发至 `127.0.0.1:8080`；出厂没有私钥，未配置证书时不启动入口。用法见主 README。
+- 保留 e2fsprogs、btrfs-progs、util-linux、fdisk，以及 nvme-cli、smartmontools、pciutils、usbutils、ethtool、procps、strace、tcpdump、curl 等诊断工具。智能磁盘监控守护进程和自动维护定时器默认关闭。
+- journald 日志持久保存，配置磁盘上限 64 MiB、保留空闲空间 128 MiB，单文件上限 8 MiB；上限回收按 journal 文件粒度执行。
+
+使用 Debian 官方通用内核，不修改已签名的内核或模块二进制；仅按 `modules.keep`、`modules.deny` 和 `firmware.keep` 删除无关文件并保留依赖闭包。内核内建功能仍由 Debian 配置决定，例如 IPv6 通过启动参数禁用。保留完整包数据库；`dpkg --verify` 可能报告按硬件策略主动删除的包文件，策略及保留模块清单见 `/etc/zxs/hardware/` 与 `/var/lib/zxs/hardware/`。
 
 ## 构建与验证
 
-需要 x86_64 Linux、可用的本机 Docker、Python 3、至少 12 GiB 可用空间。构建容器中的 bootstrap 阶段需要 privileged 来建立 guest 的 proc／dev 挂载；所有磁盘操作只针对项目内普通镜像文件。
+需要 x86_64 Linux、可用的本机 Docker、Python 3、至少 12 GiB 可用空间。bootstrap 容器需要 privileged 来建立 guest 的 proc／dev 挂载；磁盘操作只针对项目内普通镜像文件。
 
 ```sh
 ./debian-build.sh plan
@@ -26,26 +28,31 @@
 ./debian-build.sh test
 ./debian-build.sh package
 ./debian-build.sh legal-info
-# 或依次执行全部阶段
+# 或执行全部阶段
 ./debian-build.sh all
 ```
 
-默认 `.work/debian/` 保存输出、日志、测试副本和报告，`dist/zxs-linux-amd64-debian/` 保存交付文件。`ZXS_WORK_DIR` 可覆盖为仓库内的独立目录。构建重新创建 rootfs，避免已删除的软件包残留；不会改动两套 Buildroot 输出。
+默认 `.work/debian/` 保存输出、日志、测试副本和报告，`dist/zxs-linux-amd64-debian/` 保存交付文件。构建重新创建 rootfs，避免旧包残留。基础构建层来自 Debian 官方 debuerreotype 发布仓库，固定提交、大小与 SHA256 记录在 `bootstrap.json`。APT 验证官方 stable、安全及稳定更新仓库的签名和包摘要；会话 CA 仅用于构建，不进入设备信任库。包版本及硬件策略摘要记录在交付清单，重新构建会获取当前稳定版更新。
 
-基础构建层来自 Debian 官方 debuerreotype 发布仓库，固定提交、大小与 SHA256 记录在 `bootstrap.json`。构建机使用 APT 从 `sources.list` 的 stable、安全和稳定更新仓库取包，验证发行签名及包摘要。构建继承代理及 CA；会话 CA 仅用于构建，不进入设备信任库。设备端不保留 APT。构建输入版本记录于 `debian-packages.json`，裁掉的组件列于 `debian-build.json`；该清单包含引导装配时使用的工具，不等同于设备端可用命令。重新构建会获取当前安全更新，未使用冻结的软件仓库快照。
+验证检查出厂账号、分区内容和摘要、包管理链、驱动依赖、目标固件和微码、UTC、IPv4 及自动更新禁用配置。QEMU／OVMF 使用 NVMe 根盘实际冷启动两次，验证首次密码设置、本地控制台、实际 USB HID 按键输入、网络、HTTPS、udev 恢复、持久日志，以及离线 APT 安装／重启／卸载。APT 测试会实际重建 initramfs 和 EFI 启动器。
 
-验证包括镜像分区内容与摘要、UEFI 启动器、内核驱动、官方包与出厂账号；QEMU／OVMF 实际冷启动两次，检查首次密码设置、密码登录、字符控制台、DHCP／IPv4LL、HTTP、TLS 1.2／1.3、自定义证书校验及持久化、HTTPS 进程自动恢复和 udev 设备恢复。
+QEMU 不模拟雷电网络。测试所需虚拟网卡模块放在独立只读测试介质中，登录后注入可丢弃的测试副本；交付镜像不含这些模块。ext4／Btrfs 测试只操作新建的虚拟数据盘，覆盖 GPT、UUID 挂载、ext4 检查和扩容、Btrfs 快照／scrub／只读检查及跨启动数据持久化。实机 288V Xe DP 输出、NVMe、USB 设备、雷电链路／热插拔和启动速度仍须在最终设备上验收。
 
-磁盘测试仅操作 QEMU 新建的两块虚拟数据盘：GPT 分区、ext4 格式化、离线检查、扩容、UUID 挂载，Btrfs 子卷、只读快照、scrub、离线只读检查；第二次启动验证数据持久化。还验证 apt、dpkg、Bash、Perl 和 initramfs 生成工具均不存在。根分区或物理磁盘不会用于数据盘测试。实机 DP、USB4 链路、具体网卡和启动速度仍需在最终设备验收。
+## 部署与手动更新
 
-## 部署与更新
+GPT 默认 **64 MiB EFI + 1 GiB 可写 ext4 根分区**；Btrfs 用于数据盘。启动需要 x86_64 UEFI 并关闭 Secure Boot。首次在本地终端设置 root 密码，之后用 root 登录。根分区可按 NVMe 容量手动扩容。
 
-GPT 默认 **64 MiB EFI + 1 GiB 可写 ext4 根分区**。Btrfs 用于数据盘；本版没有把系统根分区改为 Btrfs。启动需要 x86_64 UEFI 并关闭 Secure Boot。首次在本地终端设置 root 密码，之后用 root 登录。
+保留完整包管理链，禁用 `apt-daily` 与 `apt-daily-upgrade` 的服务和定时器，不安装 unattended-upgrades。只有手动执行命令才更新：
 
-升级时在构建机重新执行完整构建和验证，交付新镜像。设备端不安装软件包、不重新生成内核或启动器。GRUB 读取镜像内 `/vmlinuz`、`/initrd.img`，EFI 分区无需在日常运行时挂载。覆盖系统镜像前另行备份设备配置、密码状态、证书及数据；当前工程不提供自动数据迁移或在线升级器。
+```sh
+apt-get update
+apt-get upgrade
+```
 
-ext4 修复前卸载对应分区；根分区离线修复需要独立启动介质。Btrfs 日常检查使用 `scrub`，离线诊断使用 `btrfs check --readonly`；`--repair` 不作为常规修复命令。损坏数据的修复依赖可用的冗余副本。
+雷电接口需要连接到可访问仓库的 IPv4 网络才能下载；没有网关的两机直连仅支持局域网通信。`/boot/efi` 按 UUID 挂载。APT 事务结束后自动重新应用硬件裁剪策略、生成 initramfs 和 EFI 启动器；内核 postinst 也会重新裁剪该内核模块。直接使用 `dpkg -i` 安装固件等包后，执行 `zxs-post-package-update` 应用策略和更新启动器。修改驱动范围前同时修改硬件策略；否则更新钩子会再次移除策略外的驱动。
 
-交付文件统一使用 `debian-` 前缀：压缩磁盘镜像、内核、initrd、内核配置、包版本清单、构建信息、验证报告、校验清单、本工程源码及对应 Debian 源码／补丁／许可证。源码收集覆盖所安装软件包和 Built-Using／Static-Built-Using 声明，包含签名内核对应的 Linux 源码；固件遵循各自许可证。
+1 GiB 根分区只为精简系统预留空间；大量日志、额外软件或保留多个内核前应扩容。升级前检查 `df -h / /boot/efi`，保留救援介质并备份配置、密码状态、证书和数据。本工程不提供 A/B 回滚或自动数据迁移。
 
-GitHub 标签发布会并行构建三套配置，全部验证通过后统一公开 Release。Debian 刷机下载 `debian-disk.img.xz` 和 `debian-SHA256SUMS`；源码／许可证档案用于审计和再分发，无需写入设备。
+排障可使用 `systemctl --failed`、`journalctl -b`、`journalctl -b -1`、`dmesg`、`lspci -nnk`、`lsusb`、`nvme list`、`smartctl` 和 `ip -4 addr`。ext4 修复前卸载对应分区，根分区离线修复需要独立启动介质。Btrfs 日常使用 `scrub`，离线诊断使用 `btrfs check --readonly`；`--repair` 不作为常规修复命令。
+
+交付文件统一使用 `debian-` 前缀，包括镜像、内核、initrd、配置、清单、验证报告、校验文件、本工程源码及对应 Debian 源码／补丁／许可证。GitHub 标签发布会构建三套配置，全部验证通过后统一公开 Release。刷机只需下载 `debian-disk.img.xz` 和 `debian-SHA256SUMS`。

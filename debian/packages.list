@@ -1,4 +1,5 @@
-# Debian 13 bootstrap inputs. Package/install tools are removed before imaging.
+# Debian stable minbase + Intel Core Ultra 9 288V appliance capabilities.
+# Keep the supported Debian package management chain; disable automatic upgrades.
 systemd-sysv
 udev
 dbus
@@ -7,6 +8,8 @@ initramfs-tools
 grub-efi-amd64-bin
 passwd
 login
+apt
+tzdata
 ca-certificates
 dhcpcd-base
 iproute2
@@ -17,10 +20,15 @@ e2fsprogs
 btrfs-progs
 util-linux
 fdisk
+dosfstools
 kmod
-firmware-amd-graphics
 firmware-intel-graphics
-firmware-realtek
-firmware-misc-nonfree
-firmware-bnx2
-firmware-bnx2x
+intel-microcode
+pciutils
+usbutils
+ethtool
+procps
+strace
+tcpdump
+smartmontools
+nvme-cli

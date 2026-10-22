@@ -1,0 +1,56 @@
+#!/bin/sh
+# Reapply the audited hardware policy after official Debian kernel/firmware updates.
+set -eu
+policy=/etc/zxs/hardware
+state=/var/lib/zxs/hardware
+mkdir -p "$state"
+for directory in /lib/modules/*; do
+    [ -f "$directory/modules.dep" ] || continue
+    version=${directory##*/}
+    [ "${1:-all}" = all ] || [ "$1" = "$version" ] || continue
+    keep=$(mktemp)
+    trap 'rm -f "$keep"' EXIT HUP INT TERM
+    awk '
+    function matches(path, patterns, count, i) {
+        for (i=1;i<=count;i++) if (path ~ patterns[i]) return 1
+        return 0
+    }
+    function possible(node, count, parts, i) {
+        if (node in status) return status[node] > 0
+        if (matches(node, deny, nd)) { status[node]=-1; return 0 }
+        status[node]=1
+        count=split(deps[node],parts," ")
+        for(i=1;i<=count;i++) if(parts[i]!="" && !possible(parts[i])) { status[node]=-1; return 0 }
+        status[node]=2
+        return 1
+    }
+    function retain(node, count, parts, i) {
+        if (node in saved) return
+        saved[node]=1
+        count=split(deps[node],parts," ")
+        for(i=1;i<=count;i++) if(parts[i]!="") retain(parts[i])
+    }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    FILENAME==ARGV[1] { allow[++na]=$0; next }
+    FILENAME==ARGV[2] { deny[++nd]=$0; next }
+    { split($0,p,":"); paths[p[1]]=1; sub(/^[^:]*:[[:space:]]*/,""); deps[p[1]]=$0 }
+    END {
+        for(node in paths) if(matches(node,allow,na) && possible(node)) retain(node)
+        for(node in saved) print node
+    }' "$policy/modules.keep" "$policy/modules.deny" "$directory/modules.dep" | sort > "$keep"
+    [ -s "$keep" ] || { echo 'Hardware policy retained no modules.' >&2; exit 1; }
+    find "$directory/kernel" -type f -name '*.ko*' | while IFS= read -r module; do
+        relative=${module#"$directory/"}
+        if ! grep -Fqx "$relative" "$keep"; then rm -f "$module"; fi
+    done
+    cp "$keep" "$state/$version.modules"
+    depmod -a "$version"
+    rm -f "$keep"
+    trap - EXIT HUP INT TERM
+done
+find /usr/lib/firmware -type f -o -type l | while IFS= read -r firmware; do
+    relative=${firmware#/usr/lib/firmware/}
+    if ! awk -v name="$relative" '!/^#/ && NF && name ~ $0 { found=1 } END { exit !found }' "$policy/firmware.keep"; then
+        rm -f "$firmware"
+    fi
+done

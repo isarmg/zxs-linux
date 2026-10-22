@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Boot the actual GPT/UEFI disk twice, exercising login, DHCP, HTTP and persistence."""
 import http.server
+import json
 import os
 import re
 import secrets
 import select
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -111,9 +113,15 @@ def boot(stage, folder, password, nonce, port):
         '-device', 'e1000e,netdev=isolated,mac=52:54:00:12:34:57,romfile=',
     ]
     if VARIANT == 'debian':
+        command[command.index('virtio-blk-pci,drive=system')] = 'nvme,drive=system,serial=zxs-test-nvme'
         for index, name in enumerate(('ext4-test.img', 'btrfs-test.img')):
             command += ['-drive', f'if=none,format=raw,id=data{index},file={folder}/{name}',
                         '-device', f'virtio-blk-pci,drive=data{index}']
+        qmp = folder / 'qmp.sock'
+        qmp.unlink(missing_ok=True)
+        command += ['-drive', f'if=none,format=raw,id=fixture,readonly=on,file={folder}/fixture.img',
+                    '-device', 'virtio-blk-pci,drive=fixture', '-device', 'qemu-xhci,id=xhci',
+                    '-device', 'usb-kbd,bus=xhci.0', '-qmp', f'unix:{qmp},server=on,wait=off']
     with (folder / f'boot-{stage}.log').open('wb') as logfile:
         started = time.monotonic()
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -145,6 +153,21 @@ def boot(stage, folder, password, nonce, port):
             tools_check = ("readlink /proc/$$/exe | grep -q '/dash$'\nls --version | grep -q 'GNU coreutils'"
                            if VARIANT == 'debian' else
                            "readlink /proc/$$/exe | grep -q '/busybox$'\nls --help 2>&1 | grep -q BusyBox")
+            fixture_setup = '''
+test -b /dev/nvme0n1
+mkdir -p /mnt/zxs-test
+mount -o ro /dev/vdc /mnt/zxs-test
+# These virtual NIC drivers are injected into the disposable test copy only.
+cp -a /mnt/zxs-test/lib/modules/. /lib/modules/
+depmod -a
+sed -i '/^allowinterfaces /d' /etc/dhcpcd.conf
+modprobe virtio_net
+modprobe e1000e
+udevadm trigger --type=devices --action=add
+udevadm settle --timeout=30
+systemctl restart dhcpcd.service
+/mnt/zxs-test/usb-keyboard
+''' if VARIANT == 'debian' else ''
             script = f'''set -eux
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "\\n{failure}:%s\\n" "$rc"; fi' EXIT
 uname -r
@@ -154,6 +177,7 @@ test "$(uname -r)" = '{expected_kernel}'
 test -e /etc/zxs/initialized
 {tools_check}
 printf '\\n{metrics_marker}:%s:%s\\n' "$(cut -d' ' -f1 /proc/uptime)" "$(grep '^MemAvailable:' /proc/meminfo | tr -s ' ' | cut -d' ' -f2)"
+{fixture_setup}
 bound_console=0
 for console in /sys/class/vtconsole/vtcon*; do
     if grep -q 'frame buffer' "$console/name" && test "$(cat "$console/bind")" = 1; then
@@ -181,9 +205,11 @@ systemctl is-active --quiet multi-user.target
 systemctl is-active dhcpcd.service systemd-journald.service systemd-udevd.service
 busctl --system --no-pager list >/dev/null
 test -z "$(systemctl --failed --no-legend --plain)"
-grep -q '^Storage=volatile$' /etc/systemd/journald.conf.d/zxs.conf
 test -s /etc/machine-id
 '''
+                script += ("grep -q '^Storage=persistent$' /etc/systemd/journald.conf.d/zxs.conf\n"
+                           if VARIANT == 'debian' else
+                           "grep -q '^Storage=volatile$' /etc/systemd/journald.conf.d/zxs.conf\n")
                 if stage == 1:
                     script += 'cp /etc/machine-id /root/test-machine-id\n'
                 else:
@@ -298,10 +324,15 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
                 script += f"printf '%s\\n' '{nonce}' > /etc/zxs/boot-test-persistence\n"
             else:
                 script += f"test \"$(cat /etc/zxs/boot-test-persistence)\" = '{nonce}'\n"
+            if VARIANT == 'debian':
+                script += package_checks(stage, nonce)
             script += f"uname -r; ip -4 addr; printf '\\n{marker}\\n'; sync; poweroff\n"
             console.send('sh -c ' + shlex.quote(script))
             measured = console.expect(metric_pattern(metrics_marker), timeout=30)
-            outcome = console.expect('^(' + marker + '|' + failure + r':[0-9]+)$', timeout=300)
+            if VARIANT == 'debian':
+                console.expect('^ZXS_USB_KEYBOARD_READY$', timeout=90)
+                send_usb_key(qmp)
+            outcome = console.expect('^(' + marker + '|' + failure + r':[0-9]+)$', timeout=600)
             if outcome.group(1) != marker:
                 diagnostic_marker = 'ZXS_DIAGNOSTICS_' + nonce
                 diagnostic = ('ip -br link; ip -4 addr; ip -4 route; '
@@ -368,14 +399,77 @@ umount /mnt/test-ext4 /mnt/test-btrfs
 e2fsck -fn /dev/vdb1
 btrfs check --readonly /dev/vdc
 '''
-    if stage == 1:
-        script += '''for tool in apt apt-get apt-cache dpkg dpkg-query perl bash update-initramfs; do
-    if command -v "$tool"; then exit 1; fi
+    # With an NVMe root the two virtio test data disks are vda/vdb.
+    return script.replace('/dev/vdc', '/dev/DATA_BTRFS').replace('/dev/vdb', '/dev/vda').replace('/dev/DATA_BTRFS', '/dev/vdb')
+
+
+def send_usb_key(path):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(10)
+        client.connect(str(path))
+        stream = client.makefile('rwb', buffering=0)
+        json.loads(stream.readline())
+        def execute(command, arguments=None):
+            stream.write((json.dumps({'execute': command, 'arguments': arguments or {}}) + '\n').encode())
+            while True:
+                response = json.loads(stream.readline())
+                if 'error' in response:
+                    raise RuntimeError(response['error'])
+                if 'return' in response:
+                    return
+        execute('qmp_capabilities')
+        execute('send-key', {'keys': [{'type': 'qcode', 'data': 'a'}]})
+
+
+def package_checks(stage, nonce):
+    script = '''for tool in apt apt-get apt-cache dpkg dpkg-query perl bash update-initramfs nvme smartctl strace tcpdump lspci lsusb; do
+    command -v "$tool"
 done
-test ! -d /var/lib/dpkg
-test ! -d /var/lib/apt
+dpkg --audit
+apt-get check
+test "$(date +%Z)" = UTC
+mountpoint -q /boot/efi
+systemctl is-enabled apt-daily.timer | grep -qx masked
+systemctl is-enabled apt-daily-upgrade.timer | grep -qx masked
+'''
+    if stage == 1:
+        script += f'''logger 'ZXS_PERSISTENT_JOURNAL_{nonce}'
+journalctl --sync
+apt-get --yes install /mnt/zxs-test/zxs-apt-test.deb
+dpkg-query -W zxs-apt-test
+test "$(cat /usr/share/zxs-apt-test/marker)" = offline-package-test
+test -s /boot/efi/EFI/BOOT/BOOTX64.EFI
+'''
+    else:
+        script += f'''journalctl -b -1 --no-pager | grep 'ZXS_PERSISTENT_JOURNAL_{nonce}'
+test "$(cat /usr/share/zxs-apt-test/marker)" = offline-package-test
+dpkg-query -W zxs-apt-test
+apt-get --yes purge zxs-apt-test
+test ! -e /usr/share/zxs-apt-test/marker
+'''
+    script += '''test -z "$(find /lib/modules -name 'virtio_net.ko*' -o -name 'e1000e.ko*')"
+test -z "$(systemctl --failed --no-legend --plain)"
 '''
     return script
+
+
+def make_debian_fixture(folder):
+    tree = folder / 'fixture'
+    shutil.rmtree(tree, ignore_errors=True)
+    shutil.copytree(OUTPUT / 'test-modules', tree)
+    subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(ROOT / 'scripts/test-usb-keyboard.c'), '-o', str(tree / 'usb-keyboard')], check=True)
+    package = folder / 'test-package'
+    shutil.rmtree(package, ignore_errors=True)
+    (package / 'DEBIAN').mkdir(parents=True)
+    (package / 'DEBIAN/control').write_text('Package: zxs-apt-test\nVersion: 1.0\nArchitecture: all\nMaintainer: ZXS build test\nDescription: Offline package-management validation fixture\n')
+    (package / 'usr/share/zxs-apt-test').mkdir(parents=True)
+    (package / 'usr/share/zxs-apt-test/marker').write_text('offline-package-test\n')
+    subprocess.run(['dpkg-deb', '--build', '--root-owner-group', str(package), str(tree / 'zxs-apt-test.deb')], check=True)
+    image = folder / 'fixture.img'
+    with image.open('wb') as stream:
+        stream.truncate(32 * 1024**2)
+    subprocess.run(['mke2fs', '-q', '-F', '-t', 'ext4', '-d', str(tree), str(image)], check=True)
 
 
 def main():
@@ -386,6 +480,7 @@ def main():
     subprocess.run(['cp', '--sparse=always', str(OUTPUT / 'images/disk.img'), str(folder / 'disk.img')], check=True)
     (folder / 'OVMF_VARS.fd').unlink(missing_ok=True)
     if VARIANT == 'debian':
+        make_debian_fixture(folder)
         for name, size in (('ext4-test.img', 256), ('btrfs-test.img', 512)):
             with (folder / name).open('wb') as stream:
                 stream.truncate(size * 1024**2)
@@ -416,6 +511,10 @@ def main():
             if VARIANT == 'debian':
                 passed.append(f'Disk boot {stage}: ext4 UUID mount, e2fsck, Btrfs read-only snapshot, scrub, check and persistent data')
             print(f'UEFI boot {stage}: passed')
+        if VARIANT == 'debian':
+            passed.append('NVMe root; actual USB HID key input; UTC; complete apt/dpkg; disabled automatic updates')
+            passed.append('Offline APT install, cold reboot through regenerated initramfs/EFI loader, package persistence and purge; hardware policy reapplied')
+            passed.append('Persistent journal retains a diagnostic marker from the previous boot')
         passed.append('Root password, initialization state and test data survive a cold reboot')
         passed.append('HTTPS certificate and private key persist; HTTPS starts automatically after a cold reboot')
         path = report('boot-test', {
@@ -423,8 +522,12 @@ def main():
             'timings': timings,
             'timing_scope': 'QEMU TCG wall time from process launch to first console prompt; two boots, not a hardware benchmark',
             'logs': [str(folder / f'boot-{stage}.log') for stage in (1, 2)],
-            'unrun_physical_checks': ['Intel/AMD DP output', 'Thunderbolt/USB4 link and hotplug',
-                                      'Physical PCIe/USB NIC throughput and hotplug'],
+            'network_test_scope': ('Virtual NIC drivers on separate test media, injected into test copy; factory disk contains only thunderbolt-net'
+                                   if VARIANT == 'debian' else 'QEMU virtual wired NICs'),
+            'unrun_physical_checks': (['288V Xe DP output', 'Thunderbolt/USB4 host-to-host link and hotplug',
+                                       'Physical NVMe, USB devices and hardware boot performance']
+                                      if VARIANT == 'debian' else ['Intel/AMD DP output', 'Thunderbolt/USB4 link and hotplug',
+                                                                  'Physical PCIe/USB NIC throughput and hotplug']),
         })
         print(f'Boot validation passed; {path}')
     except Exception as error:

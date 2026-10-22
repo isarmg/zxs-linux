@@ -2,6 +2,7 @@
 """Build Debian from authenticated APT packages; all disks are regular files."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,7 +71,6 @@ def build():
     finally:
         for mountpoint in reversed(mounted):
             run('umount', mountpoint)
-    trim_runtime()
     make_images()
 
 
@@ -80,7 +80,42 @@ def configure():
     write('etc/zxs-release', 'variant=debian\ninit=systemd\nzxs=absent\n')
     write('etc/machine-id', '')
     (TARGET / 'var/lib/dbus/machine-id').unlink(missing_ok=True)
-    write('etc/fstab', f'UUID={ROOT_FSUUID} / ext4 defaults 0 1\n')
+    write('etc/fstab', f'UUID={ROOT_FSUUID} / ext4 defaults 0 1\nUUID=5A58-5301 /boot/efi vfat umask=0077 0 2\n')
+    (TARGET / 'boot/efi').mkdir(exist_ok=True)
+    (TARGET / 'etc/localtime').unlink(missing_ok=True)
+    (TARGET / 'etc/localtime').symlink_to('/usr/share/zoneinfo/Etc/UTC')
+    write('etc/timezone', 'Etc/UTC\n')
+    write('etc/adjtime', '0.0 0 0.0\n0\nUTC\n')
+    write('etc/default/intel-microcode', 'IUCODE_TOOL_INITRAMFS=early\nIUCODE_TOOL_SCANCPUS=no\n')
+    # Use the target CPU policy, never hardware detection on the cloud builder.
+    for name in ('modules.keep', 'modules.deny', 'firmware.keep'):
+        write('etc/zxs/hardware/' + name, (ROOT / 'debian' / name).read_text())
+    install('debian/zxs-hardware-trim', 'usr/sbin/zxs-hardware-trim')
+    install('debian/zxs-update-bootloader', 'usr/sbin/zxs-update-bootloader')
+    install('debian/apt-postinvoke', 'usr/sbin/zxs-post-package-update')
+    install('debian/kernel-postinst', 'etc/kernel/postinst.d/zz-zxs-hardware')
+    # Keep package databases and the official update toolchain intact.
+    for source in (TARGET / 'etc/apt/sources.list.d').glob('*'):
+        source.unlink()
+    write('etc/apt/sources.list', (ROOT / 'debian/sources.list').read_text())
+    write('etc/apt/apt.conf.d/90-zxs', '''APT::Install-Recommends "false";
+APT::Install-Suggests "false";
+APT::Periodic::Enable "0";
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+DPkg::Post-Invoke { "/usr/sbin/zxs-post-package-update"; };
+''')
+    write('etc/dpkg/dpkg.cfg.d/01-zxs', '''path-exclude=/usr/share/man/*
+path-exclude=/usr/share/info/*
+path-exclude=/usr/share/locale/*
+''')
+    write('etc/modules-load.d/zxs.conf', 'thunderbolt_net\n')
+    write('etc/systemd/network/10-zxs-thunderbolt.link', '''[Match]
+OriginalName=thunderbolt*
+[Link]
+NamePolicy=
+MACAddressPolicy=none
+''')
     (TARGET / 'etc/resolv.conf').unlink(missing_ok=True)
     write('etc/resolv.conf', '# Managed by dhcpcd on the device.\n')
     run('chroot', TARGET, 'passwd', '--lock', 'root')
@@ -100,9 +135,10 @@ def configure():
                        .replace('/usr/bin/stunnel ', '/usr/bin/stunnel4 '))
     tls = (ROOT / 'br2-external/board/rootfs-overlay/etc/stunnel/stunnel.conf').read_text()
     write('etc/stunnel/stunnel.conf', tls.replace('setgid = nobody', 'setgid = nogroup'))
-    shutil.copyfile(ROOT / 'br2-external/board/rootfs-overlay/etc/dhcpcd.conf', TARGET / 'etc/dhcpcd.conf')
+    write('etc/dhcpcd.conf', (ROOT / 'br2-external/board/rootfs-overlay/etc/dhcpcd.conf').read_text()
+          + '\n# Host-to-host Thunderbolt/USB4 networking only.\nallowinterfaces thunderbolt*\n')
     write('etc/systemd/system/dhcpcd.service', '''[Unit]
-Description=Wired IPv4 DHCP and IPv4LL
+Description=Thunderbolt IPv4 DHCP and IPv4LL
 Wants=systemd-udev-trigger.service
 After=systemd-udev-trigger.service
 Before=network.target
@@ -116,16 +152,26 @@ Restart=on-failure
 WantedBy=multi-user.target
 ''')
     write('etc/sysctl.d/90-zxs.conf', 'net.ipv4.ip_forward=0\n')
-    write('etc/initramfs-tools/conf.d/zxs', 'MODULES=most\nCOMPRESS=gzip\n')
-    # Official binaries are used to assemble a fixed-function, image-updated system.
+    write('etc/initramfs-tools/conf.d/zxs', 'MODULES=most\nCOMPRESS=gzip\nFSTYPE=ext4\n')
+    write('etc/systemd/journald.conf.d/zxs.conf', '''[Journal]
+Storage=persistent
+SystemMaxUse=64M
+SystemKeepFree=128M
+SystemMaxFileSize=8M
+RuntimeMaxUse=16M
+''')
     for unit in ('stunnel4.service', 'systemd-networkd.service', 'systemd-networkd-wait-online.service',
-                 'systemd-resolved.service', 'systemd-timesyncd.service', 'systemd-logind.service',
-                 'apt-daily.timer', 'apt-daily-upgrade.timer', 'e2scrub_all.timer', 'e2scrub_reap.service', 'fstrim.timer'):
+                 'systemd-resolved.service', 'systemd-timesyncd.service',
+                 'apt-daily.timer', 'apt-daily-upgrade.timer', 'apt-daily.service', 'apt-daily-upgrade.service',
+                 'e2scrub_all.timer', 'e2scrub_reap.service', 'fstrim.timer', 'smartmontools.service',
+                 'nvmefc-boot-connections.service', 'nvmf-autoconnect.service', 'nvmf-connect.target'):
         run('chroot', TARGET, 'systemctl', '--root=/', 'mask', unit)
     run('chroot', TARGET, 'systemctl', '--root=/', 'enable', 'dhcpcd.service', 'zxs-https.service',
         'getty@tty1.service', 'serial-getty@ttyS0.service')
     run('chroot', TARGET, 'systemctl', '--root=/', 'set-default', 'multi-user.target')
     kernel = next((TARGET / 'lib/modules').iterdir()).name
+    save_test_modules(kernel)
+    run('chroot', TARGET, 'zxs-hardware-trim', 'all')
     run('chroot', TARGET, 'update-initramfs', '-u', '-k', kernel)
     for backup in (TARGET / 'boot').glob('*.dpkg-bak'):
         backup.unlink()
@@ -141,14 +187,17 @@ WantedBy=multi-user.target
     (OUTPUT / 'packages.json').write_text(json.dumps(packages, indent=2) + '\n')
     built_using = run('chroot', TARGET, 'dpkg-query', '-W',
                       '-f=${Built-Using}\n${Static-Built-Using}\n', capture_output=True, text=True).stdout
-    import re
     additional = sorted(set(re.findall(r'([a-z0-9][a-z0-9+.-]*)\s*\(=\s*([^\s)]+)\)', built_using)))
     (OUTPUT / 'additional-sources.json').write_text(json.dumps(additional, indent=2) + '\n')
     (OUTPUT / 'build.json').write_text(json.dumps({
         'distribution': 'Debian 13 (trixie)', 'kernel': kernel, 'variant': 'debian',
         'root_partuuid': ROOT_PARTUUID, 'root_fsuuid': ROOT_FSUUID,
-        'efi_mib': 64, 'root_mib': ROOT_MIB, 'updates': 'rebuild and replace image',
-        'package_manifest_scope': 'authenticated bootstrap inputs before runtime trimming',
+        'efi_mib': 64, 'root_mib': ROOT_MIB, 'updates': 'manual apt/dpkg; automatic updates disabled',
+        'hardware': 'Intel Core Ultra 9 288V, Xe, NVMe, Thunderbolt/USB4 host-to-host IPv4',
+        'timezone': 'Etc/UTC', 'journal': 'persistent, 64 MiB maximum',
+        'package_manifest_scope': 'installed Debian packages; hardware files filtered by /etc/zxs/hardware',
+        'hardware_policy_sha256': {name: sha256(ROOT / 'debian' / name)
+                                   for name in ('modules.keep', 'modules.deny', 'firmware.keep')},
         'package_selection_sha256': sha256(ROOT / 'debian/packages.list'),
         'sources_sha256': sha256(ROOT / 'debian/sources.list'),
     }, indent=2) + '\n')
@@ -160,41 +209,40 @@ WantedBy=multi-user.target
             else:
                 path.unlink()
     (TARGET / 'var/lib/systemd/random-seed').unlink(missing_ok=True)
-
-
-def trim_runtime():
-    """Remove installation/build tools by package ownership, retaining runtime libraries."""
-    packages = json.loads((OUTPUT / 'packages.json').read_text())
-    removable = {'apt', 'dpkg', 'sqv', 'gpgv', 'debian-archive-keyring', 'libapt-pkg7.0',
-                 'debconf', 'debconf-i18n', 'perl-base', 'perl', 'bash', 'bash-completion',
-                 'initramfs-tools', 'initramfs-tools-core', 'grub-common', 'grub2-common',
-                 'grub-efi-amd64-bin', 'dosfstools'}
-    selected = [p['name'] for p in packages if p['name'].split(':')[0] in removable
-                or p['name'].startswith(('libperl', 'libtext-', 'liblocale-gettext-perl'))]
-    # Save copyright information outside the runtime filesystem before deleting docs.
+    journal = TARGET / 'var/log/journal'
+    journal.mkdir(mode=0o2755)
+    gid = next(int(line.split(':')[2]) for line in (TARGET / 'etc/group').read_text().splitlines()
+               if line.startswith('systemd-journal:'))
+    os.chown(journal, 0, gid)
+    journal.chmod(0o2755)
     licenses = WORK / 'licenses'
     if licenses.exists():
         shutil.rmtree(licenses)
     licenses.mkdir()
     for name in ('doc', 'common-licenses'):
         shutil.copytree(TARGET / 'usr/share' / name, licenses / name, symlinks=True)
-    owned = run('chroot', TARGET, 'dpkg-query', '-L', *selected, capture_output=True, text=True).stdout
-    for filename in owned.splitlines():
-        if filename.startswith('/'):
-            path = TARGET / filename.lstrip('/')
-            if path.is_symlink() or path.is_file():
-                path.unlink(missing_ok=True)
-    for relative in ('etc/apt', 'etc/dpkg', 'etc/initramfs-tools', 'var/lib/apt', 'var/lib/dpkg',
-                     'var/cache/apt', 'var/cache/debconf', 'usr/share/doc', 'usr/share/man',
-                     'usr/share/info', 'usr/share/locale', 'usr/share/lintian', 'usr/share/bug',
-                     'usr/share/initramfs-tools'):
-        shutil.rmtree(TARGET / relative, ignore_errors=True)
-    # These optional ext4 maintenance scripts need LVM/Perl and are unused here.
-    for name in ('e2scrub', 'e2scrub_all', 'e2scrub_reap'):
-        (TARGET / 'usr/sbin' / name).unlink(missing_ok=True)
-    metadata = json.loads((OUTPUT / 'build.json').read_text())
-    metadata['removed_runtime_packages'] = selected
-    (OUTPUT / 'build.json').write_text(json.dumps(metadata, indent=2) + '\n')
+
+
+def save_test_modules(kernel):
+    """QEMU NICs belong on test media, never on the shipping appliance disk."""
+    source = TARGET / 'lib/modules' / kernel
+    fixture = OUTPUT / 'test-modules'
+    shutil.rmtree(fixture, ignore_errors=True)
+    dependencies = dict(line.split(':', 1) for line in (source / 'modules.dep').read_text().splitlines())
+    selected = set()
+    def retain(name):
+        if name in selected:
+            return
+        selected.add(name)
+        for dependency in dependencies[name].split():
+            retain(dependency)
+    for name in dependencies:
+        if re.search(r'/(virtio_net|e1000e)\.ko', name):
+            retain(name)
+    for name in selected:
+        destination = fixture / 'lib/modules' / kernel / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / name, destination)
 
 
 def make_images():
@@ -211,6 +259,7 @@ menuentry 'ZXS Debian minimal' {{
 }}
 '''
     (IMAGES / 'grub.cfg').write_text(grub_cfg)
+    write('etc/zxs/grub.cfg', grub_cfg)
     loader = IMAGES / 'BOOTX64.EFI'
     run('grub-mkstandalone', '-O', 'x86_64-efi', '-o', loader,
         '--modules=part_gpt ext2 fat search search_fs_uuid linux normal serial all_video',
@@ -252,11 +301,50 @@ def verify():
         for name in ('openssh-server', 'network-manager', 'wpasupplicant', 'bluez', 'xserver-xorg', 'sudo'):
             require(name not in packages, 'Excluded optional package: ' + name)
         require((TARGET / 'etc/debian_version').read_text().startswith('13'), 'Debian 13 stable rootfs')
-        require(not (TARGET / 'var/lib/dpkg').exists(), 'Runtime package database removed')
-        require(not (TARGET / 'etc/apt').exists(), 'Runtime APT configuration removed')
+        require((TARGET / 'var/lib/dpkg/status').is_file(), 'Complete installed-package database retained')
+        require((TARGET / 'etc/apt/sources.list').read_text() == (ROOT / 'debian/sources.list').read_text(),
+                'Official stable, updates and security APT repositories retained')
         for binary in ('apt', 'apt-get', 'apt-cache', 'dpkg', 'dpkg-query', 'perl', 'bash',
                        'grub-mkstandalone'):
-            require(not (TARGET / 'usr/bin' / binary).exists(), 'Runtime installation/build tool removed: ' + binary)
+            require((TARGET / 'usr/bin' / binary).is_file(), 'Supported package/update tool retained: ' + binary)
+        for name in ('geoclue-2.0', 'gpsd', 'firmware-amd-graphics', 'firmware-realtek'):
+            require(name not in packages, 'Excluded hardware/location package: ' + name)
+        require((TARGET / 'etc/localtime').readlink() == Path('/usr/share/zoneinfo/Etc/UTC'), 'UTC system timezone')
+        require((TARGET / 'usr/share/zoneinfo/Etc/UTC').is_file(), 'Official UTC timezone data retained')
+        require('allowinterfaces thunderbolt*' in (TARGET / 'etc/dhcpcd.conf').read_text(), 'Only Thunderbolt network interfaces configured')
+        require((TARGET / 'etc/modules-load.d/zxs.conf').read_text().strip() == 'thunderbolt_net',
+                'Host-to-host Thunderbolt protocol loaded at boot')
+        require('Storage=persistent' in (TARGET / 'etc/systemd/journald.conf.d/zxs.conf').read_text(),
+                'Bounded persistent journal configured')
+        for unit in ('apt-daily.timer', 'apt-daily-upgrade.timer', 'apt-daily.service', 'apt-daily-upgrade.service'):
+            require((TARGET / 'etc/systemd/system' / unit).readlink() == Path('/dev/null'), 'Automatic updates disabled: ' + unit)
+        kernel_version = (OUTPUT / 'kernel-version').read_text().strip()
+        module_root = TARGET / 'lib/modules' / kernel_version
+        modules = [str(p.relative_to(module_root)) for p in module_root.rglob('*.ko*')]
+        for name in ('nvme', 'xe', 'thunderbolt', 'thunderbolt_net', 'usbhid', 'hid-generic', 'evdev', 'ext4', 'btrfs'):
+            require(any(re.search('/' + re.escape(name) + r'\.ko', p) for p in modules), 'Required hardware module: ' + name)
+        denied = [line for line in (ROOT / 'debian/modules.deny').read_text().splitlines() if line and not line.startswith('#')]
+        require(not any(re.search(pattern, p) for pattern in denied for p in modules), 'Sound, legacy network, SATA and location modules excluded')
+        require(all('/net/thunderbolt/' in p for p in modules if p.startswith('kernel/drivers/net/')),
+                'Thunderbolt is the only shipped network driver')
+        dependency_lines = (module_root / 'modules.dep').read_text().splitlines()
+        require(all((module_root / p).is_file() for line in dependency_lines for p in line.replace(':', '').split()),
+                'Retained module dependency closure is complete')
+        for name in ('xe/lnl_guc_70.bin', 'xe/lnl_huc.bin', 'xe/lnl_gsc_1.bin', 'i915/xe2lpd_dmc.bin', 'intel-ucode/06-bd-01'):
+            require((TARGET / 'usr/lib/firmware' / name).is_file(), 'Lunar Lake firmware: ' + name)
+        require(sha256(TARGET / 'boot' / ('initrd.img-' + kernel_version)) == sha256(IMAGES / 'initrd.img'),
+                'Published initramfs matches the installed kernel')
+        initrd_listing = run('chroot', TARGET, 'lsinitramfs', '/boot/initrd.img-' + kernel_version,
+                             capture_output=True, text=True).stdout
+        require('kernel/x86/microcode/GenuineIntel.bin' in initrd_listing, 'Intel early microcode included in initramfs')
+        require(re.search(r'(^|/)sbin/fsck\n', initrd_listing) is not None, 'Early root filesystem check tool included')
+        require(re.search(r'(^|/)sbin/e2fsck\n', initrd_listing) is not None, 'Early ext4 checker included independently of build host')
+        require('IUCODE_TOOL_SCANCPUS=no' in (TARGET / 'etc/default/intel-microcode').read_text(),
+                'Microcode selection is independent of build-host CPU')
+        require('ipv6.disable=1' in (TARGET / 'etc/zxs/grub.cfg').read_text(), 'IPv6 disabled by kernel command line')
+        require('UUID=5A58-5301 /boot/efi' in (TARGET / 'etc/fstab').read_text(), 'EFI partition mounted for supported bootloader updates')
+        require((TARGET / 'etc/kernel/postinst.d/zz-zxs-hardware').is_file(), 'Kernel update reapplies hardware policy')
+        require('zxs-post-package-update' in (TARGET / 'etc/apt/apt.conf.d/90-zxs').read_text(), 'APT updates regenerate initramfs and EFI loader')
         require((TARGET / 'etc/machine-id').read_text().strip() == '', 'Factory machine ID is empty')
         require(not (TARGET / 'etc/zxs/initialized').exists(), 'Factory console is not initialized')
         require(not (TARGET / 'etc/zxs/https/server.pem').exists(), 'No factory TLS key or certificate')
@@ -277,9 +365,8 @@ def verify():
         require(next(line for line in shadow.splitlines() if line.startswith('root:')).split(':')[1].startswith(('!', '*')),
                 'Built root account is locked before local password setup')
         kernel = config(OUTPUT / 'linux.config')
-        for flag in ('EFI', 'EFI_PARTITION', 'EXT4_FS', 'BTRFS_FS', 'BLK_DEV_NVME', 'SATA_AHCI',
-                     'VIRTIO_BLK', 'VIRTIO_NET', 'USB4', 'USB4_NET', 'DRM_I915', 'DRM_AMDGPU',
-                     'E1000E', 'IGC', 'R8169', 'USB_RTL8152', 'FRAMEBUFFER_CONSOLE'):
+        for flag in ('EFI', 'EFI_PARTITION', 'EXT4_FS', 'BTRFS_FS', 'BLK_DEV_NVME',
+                     'VIRTIO_BLK', 'USB4', 'USB4_NET', 'DRM_XE', 'USB_HID', 'FRAMEBUFFER_CONSOLE'):
             require(kernel.get('CONFIG_' + flag) in ('y', 'm'), 'Official kernel capability: ' + flag)
         table = json.loads(run('sfdisk', '--json', IMAGES / 'disk.img', capture_output=True, text=True).stdout)
         entries = table['partitiontable']['partitions']
