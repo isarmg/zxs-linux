@@ -54,3 +54,10 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 ## 发布
 
 已验证镜像的发布入口为 `scripts/publish-release.sh v0.1.0`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，再执行 `./build.sh package` 和 `./build.sh legal-info`。发布脚本核验所有交付文件的 SHA256 与测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
+
+GitHub Actions 的 `Build and publish release` 流程会在推送 `v*` 标签时自动执行完整构建、镜像检查、两次 UEFI 启动测试、打包和发布；失败时保留日志，公开 Release 前必须完成全部附件上传。流程在 Debian 13 容器中构建，构建任务只有读取仓库权限，独立发布任务使用 GitHub 内置令牌。也可在 Actions 页面手动运行，指定一个已存在且尚未发布的版本标签。
+
+```sh
+git tag -a v0.2.0 -m 'ZXS Linux v0.2.0'
+git push origin main v0.2.0
+```
