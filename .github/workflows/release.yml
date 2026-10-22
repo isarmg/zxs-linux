@@ -139,7 +139,7 @@ jobs:
         run: ./debian-build.sh build
       - name: Verify UEFI media, official packages and factory state
         run: ./debian-build.sh verify
-      - name: Test two boots, LAN HTTPS, ext4 and Btrfs data disks
+      - name: Test local USB console, two boots, LAN HTTPS and data disks
         run: ./debian-build.sh test
       - name: Package verified image and corresponding sources
         run: |

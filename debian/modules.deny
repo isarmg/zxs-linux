@@ -5,3 +5,11 @@
 ^kernel/drivers/net/(virtio_net|xen-netfront|xen-netback|tun|tap|veth|dummy|ifb|macvlan|macvtap|ipvlan|ipvtap|netdevsim)\.
 ^kernel/(drivers/bluetooth|net/bluetooth|net/wireless|drivers/gnss|drivers/nfc|net/nfc)/
 ^kernel/drivers/gpu/drm/(amd|radeon|nouveau|i915)/
+# Obsolete input/storage/USB controllers and all physical serial adapters.
+^kernel/drivers/input/(serio/|keyboard/atkbd\.)
+^kernel/drivers/usb/host/(ehci|ohci|uhci|fotg210|u132|sl811|isp116x|isp1362|oxu210hp)
+^kernel/drivers/usb/serial/
+^kernel/drivers/tty/serial/
+^kernel/drivers/(cdrom|parport)/
+^kernel/drivers/scsi/sr_mod\.
+^kernel/drivers/block/(floppy|paride)

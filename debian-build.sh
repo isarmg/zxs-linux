@@ -46,7 +46,7 @@ case "${1:-plan}" in
         ;;
     check)
         docker image inspect "$builder" --format '{{.Id}}'
-        docker run --rm "$builder" sh -c 'command -v mmdebstrap; command -v qemu-system-x86_64; test -f /usr/share/OVMF/OVMF_CODE_4M.fd'
+        docker run --rm "$builder" sh -ec 'command -v mmdebstrap; command -v qemu-system-x86_64; command -v tesseract; test -f /usr/share/OVMF/OVMF_CODE_4M.fd'
         ;;
     build|verify|test|package|legal-info)
         stage=$1

@@ -4,8 +4,8 @@
 
 ## 硬件与系统配置
 
-- 保留 Lunar Lake Xe 显示、GuC／HuC／GSC／DMC 固件及 Intel 06-bd CPU 微码，本地 tty1 字符终端、USB 键盘、115200 8N1 串口。微码选择独立于构建机 CPU。
-- 系统盘为 NVMe；保留 ext4／Btrfs、USB 存储救援、少量虚拟磁盘／显示驱动。移除 SATA、其他显卡、声卡、无线／蓝牙、GNSS 定位及无关网络驱动模块与固件。
+- 保留 Lunar Lake Xe 显示、GuC／HuC／GSC／DMC 固件及 Intel 06-bd CPU 微码，本地 tty1 字符终端和 USB 键盘；不提供串口终端。微码选择独立于构建机 CPU。
+- 系统盘为 NVMe；保留 ext4／Btrfs、USB 存储救援、少量虚拟磁盘／显示驱动。移除 SATA、其他显卡、声卡、无线／蓝牙、GNSS 定位及无关网络驱动模块与固件；移除 PS/2、光驱／软驱／并口、物理串口以及 UHCI／OHCI／EHCI 等旧 USB 主控制器模块。现代 xHCI 继续支持 USB 2／3 键盘与存储设备。
 - 网络仅保留 `thunderbolt-net`，用于两台设备通过雷电／USB4 线直连。开机加载协议，dhcpcd 为 `thunderbolt*` 接口配置 IPv4 DHCP 或 IPv4LL；没有 DHCP 服务端。两端均无 DHCP 时，使用各自 `169.254.*.*` 地址通信。
 - 仅启用 IPv4：内核命令行 `ipv6.disable=1`；关闭转发，没有 Linux 软件网桥或 NAT。雷电扩展坞 RJ45 网口不在本配置支持范围内。
 - 时区与硬件时钟采用 UTC。不安装 GeoClue／gpsd、桌面、SSH、NetworkManager、Wi-Fi／蓝牙用户态服务或 sudo。
@@ -13,7 +13,7 @@
 - 保留 e2fsprogs、btrfs-progs、util-linux、fdisk，以及 nvme-cli、smartmontools、pciutils、usbutils、ethtool、procps、strace、tcpdump、curl 等诊断工具。智能磁盘监控守护进程和自动维护定时器默认关闭。
 - journald 日志持久保存，配置磁盘上限 64 MiB、保留空闲空间 128 MiB，单文件上限 8 MiB；上限回收按 journal 文件粒度执行。
 
-使用 Debian 官方通用内核，不修改已签名的内核或模块二进制；仅按 `modules.keep`、`modules.deny` 和 `firmware.keep` 删除无关文件并保留依赖闭包。内核内建功能仍由 Debian 配置决定，例如 IPv6 通过启动参数禁用。保留完整包数据库；`dpkg --verify` 可能报告按硬件策略主动删除的包文件，策略及保留模块清单见 `/etc/zxs/hardware/` 与 `/var/lib/zxs/hardware/`。
+使用 Debian 官方通用内核，不修改已签名的内核或模块二进制；仅按 `modules.keep`、`modules.deny` 和 `firmware.keep` 删除无关文件并保留依赖闭包。内核内建功能仍由 Debian 配置决定：IPv6 通过启动参数禁用；`8250.nr_uarts=0 i8042.nokbd i8042.noaux` 关闭内建 UART 端口及 PS/2 键鼠探测。GRUB 和 Linux 使用本地屏幕，`serial-getty@.service` 被屏蔽；不重编译官方内核来删除其内建代码。保留完整包数据库；`dpkg --verify` 可能报告按硬件策略主动删除的包文件，策略及保留模块清单见 `/etc/zxs/hardware/` 与 `/var/lib/zxs/hardware/`。
 
 ## 构建与验证
 
@@ -34,9 +34,9 @@
 
 默认 `.work/debian/` 保存输出、日志、测试副本和报告，`dist/zxs-linux-amd64-debian/` 保存交付文件。构建重新创建 rootfs，避免旧包残留。基础构建层来自 Debian 官方 debuerreotype 发布仓库，固定提交、大小与 SHA256 记录在 `bootstrap.json`。APT 验证官方 stable、安全及稳定更新仓库的签名和包摘要；会话 CA 仅用于构建，不进入设备信任库。包版本及硬件策略摘要记录在交付清单，重新构建会获取当前稳定版更新。
 
-验证检查出厂账号、分区内容和摘要、包管理链、驱动依赖、目标固件和微码、UTC、IPv4 及自动更新禁用配置。QEMU／OVMF 使用 NVMe 根盘实际冷启动两次，验证首次密码设置、本地控制台、实际 USB HID 按键输入、网络、HTTPS、udev 恢复、持久日志，以及离线 APT 安装／重启／卸载。APT 测试会实际重建 initramfs 和 EFI 启动器。
+验证检查出厂账号、分区内容和摘要、包管理链、驱动依赖、目标固件和微码、UTC、IPv4 及自动更新禁用配置。QEMU／OVMF 使用未经修改的出厂磁盘副本和 NVMe 根盘实际冷启动两次，关闭 QEMU 物理串口，通过屏幕识别和 USB 键盘完成首次密码设置及登录，验证本地控制台、实际 USB HID 按键、网络、HTTPS、udev 恢复、持久日志，以及离线 APT 安装／重启／卸载。屏幕识别工具仅安装在构建容器，不进入设备镜像。APT 测试会实际重建 initramfs 和 EFI 启动器。
 
-QEMU 不模拟雷电网络。测试所需虚拟网卡模块放在独立只读测试介质中，登录后注入可丢弃的测试副本；交付镜像不含这些模块。ext4／Btrfs 测试只操作新建的虚拟数据盘，覆盖 GPT、UUID 挂载、ext4 检查和扩容、Btrfs 快照／scrub／只读检查及跨启动数据持久化。实机 288V Xe DP 输出、NVMe、USB 设备、雷电链路／热插拔和启动速度仍须在最终设备上验收。
+QEMU 不模拟雷电网络。测试所需虚拟网卡和诊断字符通道模块放在独立只读测试介质中，经本地控制台登录后注入可丢弃的测试副本。诊断通道只用于自动执行检查，不配置为系统控制台或登录终端；交付镜像不含这些测试模块及服务。ext4／Btrfs 测试只操作新建的虚拟数据盘，覆盖 GPT、UUID 挂载、ext4 检查和扩容、Btrfs 快照／scrub／只读检查及跨启动数据持久化。实机 288V Xe DP 输出、NVMe、USB 设备、雷电链路／热插拔和启动速度仍须在最终设备上验收。
 
 ## 部署与手动更新
 

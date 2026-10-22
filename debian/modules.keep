@@ -10,11 +10,13 @@
 ^kernel/drivers/gpu/drm/tiny/(bochs|simpledrm)\.
 ^kernel/drivers/thunderbolt/
 ^kernel/drivers/net/thunderbolt/
-^kernel/drivers/usb/(host|storage|common)/
+^kernel/drivers/usb/host/xhci[^/]*\.
+^kernel/drivers/usb/storage/(usb-storage|uas)\.
+^kernel/drivers/usb/common/
 ^kernel/drivers/hid/(usbhid/|hid-generic\.|hid-(apple|microsoft|logitech|logitech-dj|logitech-hidpp)\.)
-^kernel/drivers/input/(evdev\.|serio/|keyboard/atkbd\.)
+^kernel/drivers/input/evdev\.
 ^kernel/drivers/nvme/host/(nvme|nvme-core|nvme-auth)\.
-^kernel/drivers/scsi/(sd_mod|sr_mod|sg|scsi_mod|scsi_common)\.
+^kernel/drivers/scsi/(sd_mod|sg|scsi_mod|scsi_common)\.
 ^kernel/drivers/virtio/
 ^kernel/drivers/block/(virtio_blk|loop)\.
 ^kernel/fs/(ext4|jbd2|mbcache|btrfs|fat|nls|autofs4)/

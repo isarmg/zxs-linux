@@ -127,7 +127,14 @@ MACAddressPolicy=none
     for source in systemd_overlay.rglob('*'):
         destination = TARGET / 'etc/systemd' / source.relative_to(systemd_overlay)
         destination.chmod(0o755 if source.is_dir() else 0o644)
-    for relative in ('getty@tty1.service.d/zxs-console.conf', 'serial-getty@ttyS0.service.d/zxs-console.conf'):
+    # Debian exposes local graphical consoles only; the Buildroot overlay is shared.
+    shutil.rmtree(TARGET / 'etc/systemd/system/serial-getty@ttyS0.service.d', ignore_errors=True)
+    write('etc/systemd/system-preset/00-zxs.preset', '''enable getty@tty1.service
+enable dhcpcd.service
+enable zxs-https.service
+disable serial-getty@.service
+''')
+    for relative in ('getty@tty1.service.d/zxs-console.conf',):
         dropin = TARGET / 'etc/systemd/system' / relative
         dropin.write_text(dropin.read_text().replace('/usr/bin/agetty ', '/usr/sbin/agetty '))
     service = TARGET / 'etc/systemd/system/zxs-https.service'
@@ -164,10 +171,11 @@ RuntimeMaxUse=16M
                  'systemd-resolved.service', 'systemd-timesyncd.service',
                  'apt-daily.timer', 'apt-daily-upgrade.timer', 'apt-daily.service', 'apt-daily-upgrade.service',
                  'e2scrub_all.timer', 'e2scrub_reap.service', 'fstrim.timer', 'smartmontools.service',
-                 'nvmefc-boot-connections.service', 'nvmf-autoconnect.service', 'nvmf-connect.target'):
+                 'nvmefc-boot-connections.service', 'nvmf-autoconnect.service', 'nvmf-connect.target',
+                 'serial-getty@.service'):
         run('chroot', TARGET, 'systemctl', '--root=/', 'mask', unit)
     run('chroot', TARGET, 'systemctl', '--root=/', 'enable', 'dhcpcd.service', 'zxs-https.service',
-        'getty@tty1.service', 'serial-getty@ttyS0.service')
+        'getty@tty1.service')
     run('chroot', TARGET, 'systemctl', '--root=/', 'set-default', 'multi-user.target')
     kernel = next((TARGET / 'lib/modules').iterdir()).name
     save_test_modules(kernel)
@@ -195,6 +203,8 @@ RuntimeMaxUse=16M
         'efi_mib': 64, 'root_mib': ROOT_MIB, 'updates': 'manual apt/dpkg; automatic updates disabled',
         'hardware': 'Intel Core Ultra 9 288V, Xe, NVMe, Thunderbolt/USB4 host-to-host IPv4',
         'timezone': 'Etc/UTC', 'journal': 'persistent, 64 MiB maximum',
+        'console': 'local tty1 with USB keyboard; physical serial disabled',
+        'legacy_hardware': 'no PS/2, optical/floppy/parallel, legacy USB hosts or physical serial',
         'package_manifest_scope': 'installed Debian packages; hardware files filtered by /etc/zxs/hardware',
         'hardware_policy_sha256': {name: sha256(ROOT / 'debian' / name)
                                    for name in ('modules.keep', 'modules.deny', 'firmware.keep')},
@@ -237,7 +247,7 @@ def save_test_modules(kernel):
         for dependency in dependencies[name].split():
             retain(dependency)
     for name in dependencies:
-        if re.search(r'/(virtio_net|e1000e)\.ko', name):
+        if re.search(r'/(virtio_net|e1000e|virtio_console)\.ko', name):
             retain(name)
     for name in selected:
         destination = fixture / 'lib/modules' / kernel / name
@@ -249,12 +259,11 @@ def make_images():
     kernel = (OUTPUT / 'kernel-version').read_text().strip()
     grub_cfg = f'''set timeout=1
 set default=0
-serial --unit=0 --speed=115200
-terminal_input console serial
-terminal_output console serial
+terminal_input console
+terminal_output console
 menuentry 'ZXS Debian minimal' {{
     search --no-floppy --fs-uuid --set=root {ROOT_FSUUID}
-    linux /vmlinuz root=PARTUUID={ROOT_PARTUUID} rootfstype=ext4 rootwait rw console=tty1 console=ttyS0,115200n8 ipv6.disable=1
+    linux /vmlinuz root=PARTUUID={ROOT_PARTUUID} rootfstype=ext4 rootwait rw console=tty1 ipv6.disable=1 8250.nr_uarts=0 i8042.nokbd i8042.noaux
     initrd /initrd.img
 }}
 '''
@@ -262,7 +271,7 @@ menuentry 'ZXS Debian minimal' {{
     write('etc/zxs/grub.cfg', grub_cfg)
     loader = IMAGES / 'BOOTX64.EFI'
     run('grub-mkstandalone', '-O', 'x86_64-efi', '-o', loader,
-        '--modules=part_gpt ext2 fat search search_fs_uuid linux normal serial all_video',
+        '--modules=part_gpt ext2 fat search search_fs_uuid linux normal all_video',
         'boot/grub/grub.cfg=' + str(IMAGES / 'grub.cfg'))
     efi = IMAGES / 'efi-part.vfat'
     with efi.open('wb') as stream:
@@ -321,12 +330,14 @@ def verify():
         kernel_version = (OUTPUT / 'kernel-version').read_text().strip()
         module_root = TARGET / 'lib/modules' / kernel_version
         modules = [str(p.relative_to(module_root)) for p in module_root.rglob('*.ko*')]
-        for name in ('nvme', 'xe', 'thunderbolt', 'thunderbolt_net', 'usbhid', 'hid-generic', 'evdev', 'ext4', 'btrfs'):
+        for name in ('nvme', 'xe', 'thunderbolt', 'thunderbolt_net', 'usbhid', 'hid-generic', 'evdev',
+                     'xhci-hcd', 'xhci-pci', 'usb-storage', 'uas', 'ext4', 'btrfs'):
             require(any(re.search('/' + re.escape(name) + r'\.ko', p) for p in modules), 'Required hardware module: ' + name)
         denied = [line for line in (ROOT / 'debian/modules.deny').read_text().splitlines() if line and not line.startswith('#')]
         require(not any(re.search(pattern, p) for pattern in denied for p in modules), 'Sound, legacy network, SATA and location modules excluded')
         require(all('/net/thunderbolt/' in p for p in modules if p.startswith('kernel/drivers/net/')),
                 'Thunderbolt is the only shipped network driver')
+        require(not any('/virtio_console.ko' in p for p in modules), 'Test diagnostic character channel excluded from production')
         dependency_lines = (module_root / 'modules.dep').read_text().splitlines()
         require(all((module_root / p).is_file() for line in dependency_lines for p in line.replace(':', '').split()),
                 'Retained module dependency closure is complete')
@@ -342,6 +353,14 @@ def verify():
         require('IUCODE_TOOL_SCANCPUS=no' in (TARGET / 'etc/default/intel-microcode').read_text(),
                 'Microcode selection is independent of build-host CPU')
         require('ipv6.disable=1' in (TARGET / 'etc/zxs/grub.cfg').read_text(), 'IPv6 disabled by kernel command line')
+        grub = (TARGET / 'etc/zxs/grub.cfg').read_text()
+        require('ttyS' not in grub and 'serial' not in grub, 'Production boot has no serial console')
+        require(all(option in grub for option in ('8250.nr_uarts=0', 'i8042.nokbd', 'i8042.noaux')),
+                'Built-in legacy UART and PS/2 discovery disabled')
+        require((TARGET / 'etc/systemd/system/serial-getty@.service').readlink() == Path('/dev/null'),
+                'Physical serial login service masked')
+        require(not (TARGET / 'etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service').is_symlink(),
+                'No serial login enabled')
         require('UUID=5A58-5301 /boot/efi' in (TARGET / 'etc/fstab').read_text(), 'EFI partition mounted for supported bootloader updates')
         require((TARGET / 'etc/kernel/postinst.d/zz-zxs-hardware').is_file(), 'Kernel update reapplies hardware policy')
         require('zxs-post-package-update' in (TARGET / 'etc/apt/apt.conf.d/90-zxs').read_text(), 'APT updates regenerate initramfs and EFI loader')

@@ -2,7 +2,7 @@
 
 独立的 amd64／UEFI 精简 Linux。当前版本不包含 ZXS；系统通过 stunnel 提供局域网 HTTPS。
 
-额外提供 [Debian 13 最小化版本](debian/README.md)：面向 Intel Core Ultra 9 288V／Xe、NVMe、雷电／USB4 两机直连；使用官方 systemd 和 GNU 工具，保留完整 apt／dpkg、关闭自动更新，采用 UTC、仅 IPv4，包含 ext4／Btrfs 和排障工具及持久日志。通过 `./debian-build.sh all` 构建，交付文件使用 `debian-` 前缀。下面的 Buildroot 配置与两套原有镜像继续保留。
+额外提供 [Debian 13 最小化版本](debian/README.md)：面向 Intel Core Ultra 9 288V／Xe、NVMe、雷电／USB4 两机直连；使用官方 systemd 和 GNU 工具，保留完整 apt／dpkg、关闭自动更新，采用 UTC、仅 IPv4，包含 ext4／Btrfs 和排障工具及持久日志；使用本地屏幕和 USB 键盘，移除串口及老旧控制器支持。通过 `./debian-build.sh all` 构建，交付文件使用 `debian-` 前缀。下面的 Buildroot 配置与两套原有镜像继续保留。
 
 ## 组成
 
@@ -49,7 +49,7 @@ systemd 版保留 PID 1、udev、journald、tmpfiles 和随机种子服务；使
 
 GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用固定 PARTUUID 寻找根分区，不依赖 `/dev/sda`／`/dev/nvme0n1` 等设备名。此布局是硬件未定时的默认值，可在 `board/genimage.cfg` 和 defconfig 中调整。
 
-通过 x86_64 UEFI 从磁盘镜像启动，启动要求 Secure Boot 关闭；本地屏幕使用 `tty1`，另有 `115200 8N1` 的 `ttyS0` 调试终端。首次启动必须在本地终端设置 root 密码，随后使用 `root` 和该密码登录；密码及配置保存在根分区。镜像没有 SSH、Telnet 或 Web 管理应用；配置证书后可启用 HTTPS 转发入口。
+通过 x86_64 UEFI 从磁盘镜像启动，启动要求 Secure Boot 关闭；本地屏幕使用 `tty1`，Buildroot 两版另有 `115200 8N1` 的 `ttyS0` 调试终端；Debian 版已移除串口终端。首次启动必须在本地终端设置 root 密码，随后使用 `root` 和该密码登录；密码及配置保存在根分区。镜像没有 SSH、Telnet 或 Web 管理应用；配置证书后可启用 HTTPS 转发入口。
 
 ## 局域网 HTTPS
 
@@ -90,13 +90,13 @@ systemd 版在设备服务停止期间触发设备事件，再重启原生 coldp
 
 ## 发布
 
-已验证镜像的发布入口为 `scripts/publish-release.sh v0.5.0`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，分别完成两套 Buildroot 的 `package`／`legal-info` 和 Debian 的对应阶段。发布脚本核验三个交付目录的 SHA256 与独立测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
+已验证镜像的发布入口为 `scripts/publish-release.sh v0.5.1`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，分别完成两套 Buildroot 的 `package`／`legal-info` 和 Debian 的对应阶段。发布脚本核验三个交付目录的 SHA256 与独立测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
 
 GitHub Actions 的 `Build and publish release` 流程会在推送 `v*` 标签时，分别构建 BusyBox init、裁剪 systemd 和 Debian 三版，执行各自的镜像检查、两次 UEFI 启动测试和打包。三版均成功后才发布同一个 Release；失败时保留各自日志，公开 Release 前必须完成全部附件上传。每版都附带自己的源码／许可证档案；刷机只需下载所选版本的 `disk.img.xz` 和对应 `SHA256SUMS`，注意 systemd／Debian 的文件名前缀。流程在 Debian 13 容器中构建，构建任务只有读取仓库权限，独立发布任务使用 GitHub 内置令牌。也可在 Actions 页面手动运行，指定一个已存在且尚未发布的版本标签。
 
 ```sh
-git tag -a v0.5.0 -m 'ZXS Linux v0.5.0: Debian 288V, NVMe, Thunderbolt IPv4 and manual APT updates'
-git push origin main v0.5.0
+git tag -a v0.5.1 -m 'ZXS Linux v0.5.1: Debian local USB console without serial or legacy controllers'
+git push origin main v0.5.1
 ```
 
 `Supplement existing release toolchain sources` 手动流程可为早期发布附加完整 SDK 源码和许可证（含独立 SHA256）；新版本的常规 `legal-info` 已将这些组件一并收集。

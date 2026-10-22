@@ -42,6 +42,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class Console:
     def __init__(self, process, logfile, password):
         self.process, self.logfile, self.pending = process, logfile, ''
+        self.reader, self.writer = process.stdout, process.stdin
         self.password = password.encode()
         self.log_pending = b''
 
@@ -70,9 +71,9 @@ class Console:
                 return found
             if time.monotonic() >= end:
                 raise RuntimeError(f'Console timeout waiting for {pattern!r}; inspect {self.logfile.name}')
-            ready, _, _ = select.select([self.process.stdout], [], [], 1)
+            ready, _, _ = select.select([self.reader], [], [], 1)
             if ready:
-                data = os.read(self.process.stdout.fileno(), 65536)
+                data = os.read(self.reader.fileno(), 65536)
                 if not data:
                     raise RuntimeError(f'QEMU exited before {pattern!r}; inspect {self.logfile.name}')
                 self.log(data)
@@ -81,8 +82,8 @@ class Console:
                     self.pending = self.pending[-512 * 1024:]
 
     def send(self, line):
-        self.process.stdin.write((line + '\n').encode())
-        self.process.stdin.flush()
+        self.writer.write((line + '\n').encode())
+        self.writer.flush()
 
 
 def metric_pattern(marker):
@@ -113,6 +114,7 @@ def boot(stage, folder, password, nonce, port):
         '-device', 'e1000e,netdev=isolated,mac=52:54:00:12:34:57,romfile=',
     ]
     if VARIANT == 'debian':
+        command[command.index('-serial') + 1] = 'none'
         command[command.index('virtio-blk-pci,drive=system')] = 'nvme,drive=system,serial=zxs-test-nvme'
         for index, name in enumerate(('ext4-test.img', 'btrfs-test.img')):
             command += ['-drive', f'if=none,format=raw,id=data{index},file={folder}/{name}',
@@ -120,14 +122,22 @@ def boot(stage, folder, password, nonce, port):
         qmp = folder / 'qmp.sock'
         qmp.unlink(missing_ok=True)
         command += ['-drive', f'if=none,format=raw,id=fixture,readonly=on,file={folder}/fixture.img',
-                    '-device', 'virtio-blk-pci,drive=fixture', '-device', 'qemu-xhci,id=xhci',
+                    '-device', 'qemu-xhci,id=xhci', '-device', 'usb-storage,drive=fixture,bus=xhci.0',
                     '-device', 'usb-kbd,bus=xhci.0', '-qmp', f'unix:{qmp},server=on,wait=off']
+        channel = folder / 'test-channel.sock'
+        channel.unlink(missing_ok=True)
+        command += ['-chardev', f'socket,id=test,path={channel},server=on,wait=off',
+                    '-device', 'virtio-serial-pci',
+                    '-device', 'virtserialport,chardev=test,name=zxs-test']
     with (folder / f'boot-{stage}.log').open('wb') as logfile:
         started = time.monotonic()
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, bufsize=0)
         console = Console(process, logfile, password)
         try:
+            if VARIANT == 'debian':
+                from graphical_console import GraphicalConsole
+                console = GraphicalConsole(process, logfile, password, folder, qmp, channel, Console)
             if stage == 1:
                 console.expect('ZXS_FIRST_BOOT:')
                 console_ready = time.monotonic() - started
@@ -143,6 +153,8 @@ def boot(stage, folder, password, nonce, port):
             console.expect('Password:')
             console.send(password)
             console.expect(r'^.*# $', timeout=30)
+            if VARIANT == 'debian':
+                console.activate_test_channel()
             marker = 'ZXS_TEST_PASS_' + nonce + '_' + str(stage)
             failure = 'ZXS_TEST_FAIL_' + nonce + '_' + str(stage)
             metrics_marker = 'ZXS_BOOT_METRICS_' + nonce + '_' + str(stage)
@@ -155,8 +167,13 @@ def boot(stage, folder, password, nonce, port):
                            "readlink /proc/$$/exe | grep -q '/busybox$'\nls --help 2>&1 | grep -q BusyBox")
             fixture_setup = '''
 test -b /dev/nvme0n1
+! grep -Eq 'console=(ttyS|hvc)|earlycon' /proc/cmdline
+! grep -q ttyS /proc/consoles
+test ! -e /dev/ttyS0
+test -z "$(ls -A /sys/bus/serio/devices)"
+systemctl is-enabled serial-getty@ttyS0.service | grep -qx masked
+test -z "$(find /lib/modules -name 'ehci*.ko*' -o -name 'ohci*.ko*' -o -name 'uhci*.ko*' -o -name 'sr_mod.ko*' -o -name 'cdrom.ko*')"
 mkdir -p /mnt/zxs-test
-mount -o ro /dev/vdc /mnt/zxs-test
 # These virtual NIC drivers are injected into the disposable test copy only.
 cp -a /mnt/zxs-test/lib/modules/. /lib/modules/
 depmod -a
@@ -346,7 +363,8 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
                 except (RuntimeError, OSError):
                     pass
                 raise RuntimeError(f'Guest check failed: {outcome.group(1)}; inspect {logfile.name}')
-            console.expect('Power down', timeout=30)
+            if VARIANT != 'debian':
+                console.expect('Power down', timeout=30)
             process.wait(timeout=30)
             if process.returncode != 0:
                 raise RuntimeError(f'QEMU returned {process.returncode}')
@@ -362,6 +380,8 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
                     process.kill()
                     process.wait()
             console.log(b'', final=True)
+            if VARIANT == 'debian' and hasattr(console, 'close'):
+                console.close()
 
 
 def disk_checks(stage, nonce):
@@ -457,6 +477,20 @@ def make_debian_fixture(folder):
     tree = folder / 'fixture'
     shutil.rmtree(tree, ignore_errors=True)
     shutil.copytree(OUTPUT / 'test-modules', tree)
+    (tree / 'console').write_text('''#!/bin/sh
+set -eu
+cp -a /mnt/zxs-test/lib/modules/. /lib/modules/
+depmod -a
+modprobe virtio_console
+for attempt in $(seq 1 30); do
+    test ! -e /dev/virtio-ports/zxs-test || break
+    sleep 1
+done
+exec 3<> /dev/virtio-ports/zxs-test
+printf 'ZXS_TEST_CHANNEL_READY\\n' >&3
+exec /bin/sh -i <&3 >&3 2>&1
+''')
+    (tree / 'console').chmod(0o755)
     subprocess.run(['gcc', '-O2', '-Wall', '-Wextra', '-Werror',
                     str(ROOT / 'scripts/test-usb-keyboard.c'), '-o', str(tree / 'usb-keyboard')], check=True)
     package = folder / 'test-package'
@@ -512,6 +546,7 @@ def main():
                 passed.append(f'Disk boot {stage}: ext4 UUID mount, e2fsck, Btrfs read-only snapshot, scrub, check and persistent data')
             print(f'UEFI boot {stage}: passed')
         if VARIANT == 'debian':
+            passed.append('Unmodified factory image: VGA/USB keyboard password setup and login, xHCI USB rescue media, physical serial and PS/2 disabled, no legacy USB/optical modules')
             passed.append('NVMe root; actual USB HID key input; UTC; complete apt/dpkg; disabled automatic updates')
             passed.append('Offline APT install, cold reboot through regenerated initramfs/EFI loader, package persistence and purge; hardware policy reapplied')
             passed.append('Persistent journal retains a diagnostic marker from the previous boot')
@@ -520,7 +555,9 @@ def main():
         path = report('boot-test', {
             'status': 'passed', 'checks': passed, 'artifacts': identity,
             'timings': timings,
-            'timing_scope': 'QEMU TCG wall time from process launch to first console prompt; two boots, not a hardware benchmark',
+            'timing_scope': ('QEMU TCG with VGA OCR and USB input; prompt recognition overhead included; two boots, not a hardware benchmark'
+                             if VARIANT == 'debian' else
+                             'QEMU TCG wall time from process launch to first console prompt; two boots, not a hardware benchmark'),
             'logs': [str(folder / f'boot-{stage}.log') for stage in (1, 2)],
             'network_test_scope': ('Virtual NIC drivers on separate test media, injected into test copy; factory disk contains only thunderbolt-net'
                                    if VARIANT == 'debian' else 'QEMU virtual wired NICs'),
