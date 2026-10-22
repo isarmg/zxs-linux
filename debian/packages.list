@@ -1,0 +1,26 @@
+# Debian 13 bootstrap inputs. Package/install tools are removed before imaging.
+systemd-sysv
+udev
+dbus
+linux-image-amd64
+initramfs-tools
+grub-efi-amd64-bin
+passwd
+login
+ca-certificates
+dhcpcd-base
+iproute2
+curl
+openssl
+stunnel4
+e2fsprogs
+btrfs-progs
+util-linux
+fdisk
+kmod
+firmware-amd-graphics
+firmware-intel-graphics
+firmware-realtek
+firmware-misc-nonfree
+firmware-bnx2
+firmware-bnx2x

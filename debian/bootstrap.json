@@ -1,0 +1,7 @@
+{
+  "repository": "debuerreotype/docker-debian-artifacts",
+  "commit": "cee78df586385250331cacba8fd1140133c054e5",
+  "path": "trixie/slim/oci/blobs/rootfs.tar.gz",
+  "sha256": "f2be67225471500c788ce88c597eb5ea8336e912ad1ca4815650e0281afe2034",
+  "size": 29843579
+}

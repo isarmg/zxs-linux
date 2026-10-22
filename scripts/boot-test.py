@@ -14,6 +14,8 @@ import time
 
 from common import CACHE, OUTPUT, ROOT, VARIANT, WORK, artifact_identity, report, require_current_report
 
+SYSTEMD = VARIANT in ('systemd', 'debian')
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
     backend_payload = b''
@@ -51,7 +53,7 @@ class Console:
         else:
             return
         complete = complete.replace(self.password, b'[redacted]')
-        complete = re.sub(rb'((?:New password|Retype password|Password):)[^\r\n]*', rb'\1 [redacted]', complete)
+        complete = re.sub(rb'((?:New password|Retype(?: new)? password|Password):)[^\r\n]*', rb'\1 [redacted]', complete)
         self.logfile.write(complete)
         self.logfile.flush()
 
@@ -88,6 +90,9 @@ def metric_pattern(marker):
 
 def boot(stage, folder, password, nonce, port):
     prefix = CACHE / 'host/usr/share'
+    if VARIANT == 'debian' and not (prefix / 'OVMF/OVMF_CODE_4M.fd').exists():
+        from pathlib import Path
+        prefix = Path('/usr/share')
     firmware_dir = prefix / 'OVMF'
     variables = folder / 'OVMF_VARS.fd'
     if not variables.exists():
@@ -105,6 +110,10 @@ def boot(stage, folder, password, nonce, port):
         '-netdev', 'hubport,id=isolated,hubid=1',
         '-device', 'e1000e,netdev=isolated,mac=52:54:00:12:34:57,romfile=',
     ]
+    if VARIANT == 'debian':
+        for index, name in enumerate(('ext4-test.img', 'btrfs-test.img')):
+            command += ['-drive', f'if=none,format=raw,id=data{index},file={folder}/{name}',
+                        '-device', f'virtio-blk-pci,drive=data{index}']
     with (folder / f'boot-{stage}.log').open('wb') as logfile:
         started = time.monotonic()
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -117,7 +126,7 @@ def boot(stage, folder, password, nonce, port):
                 console.send('')
                 console.expect('New password:')
                 console.send(password)
-                console.expect('Retype password:')
+                console.expect(r'Retype(?: new)? password:')
                 console.send(password)
             console.expect('zxs-linux login:')
             if stage == 2:
@@ -129,17 +138,21 @@ def boot(stage, folder, password, nonce, port):
             marker = 'ZXS_TEST_PASS_' + nonce + '_' + str(stage)
             failure = 'ZXS_TEST_FAIL_' + nonce + '_' + str(stage)
             metrics_marker = 'ZXS_BOOT_METRICS_' + nonce + '_' + str(stage)
-            start_https = ('systemctl start zxs-https.service' if VARIANT == 'systemd'
+            start_https = ('systemctl start zxs-https.service' if SYSTEMD
                            else '/etc/init.d/S50stunnel start')
+            expected_kernel = ((OUTPUT / 'kernel-version').read_text().strip()
+                               if VARIANT == 'debian' else '6.18.58')
+            tools_check = ("readlink /proc/$$/exe | grep -q '/dash$'\nls --version | grep -q 'GNU coreutils'"
+                           if VARIANT == 'debian' else
+                           "readlink /proc/$$/exe | grep -q '/busybox$'\nls --help 2>&1 | grep -q BusyBox")
             script = f'''set -eux
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "\\n{failure}:%s\\n" "$rc"; fi' EXIT
 uname -r
 ip -4 addr
 ip -4 route
-test "$(uname -r)" = '6.18.58'
+test "$(uname -r)" = '{expected_kernel}'
 test -e /etc/zxs/initialized
-readlink /proc/$$/exe | grep -q '/busybox$'
-ls --help 2>&1 | grep -q BusyBox
+{tools_check}
 printf '\\n{metrics_marker}:%s:%s\\n' "$(cut -d' ' -f1 /proc/uptime)" "$(grep '^MemAvailable:' /proc/meminfo | tr -s ' ' | cut -d' ' -f2)"
 bound_console=0
 for console in /sys/class/vtconsole/vtcon*; do
@@ -160,7 +173,7 @@ for i in $(seq 1 60); do ip -4 addr show | grep -q 'inet 169[.]254[.]' && break;
 ip -4 addr show | grep -q 'inet 169[.]254[.]'
 grep -qx 'zxs=absent' /etc/zxs-release
 '''
-            if VARIANT == 'systemd':
+            if SYSTEMD:
                 script += '''test "$(cat /proc/1/comm)" = systemd
 test -d /sys/fs/cgroup
 for i in $(seq 1 30); do systemctl is-active --quiet multi-user.target && break; sleep 1; done
@@ -201,7 +214,7 @@ https_pid=$(cat /run/zxs-https/stunnel.pid)
 {start_https}
 test "$(cat /run/zxs-https/stunnel.pid)" = "$https_pid"
 '''
-            if VARIANT == 'systemd':
+            if SYSTEMD:
                 script += '''systemctl is-active --quiet zxs-https.service
 test "$(systemctl show --property MainPID --value zxs-https.service)" = "$https_pid"
 kill -KILL "$https_pid"
@@ -225,12 +238,16 @@ test "$(curl --fail --silent --show-error --max-time 15 --resolve zxs-test.lan:4
 if curl --fail --silent --max-time 10 https://127.0.0.1/ >/dev/null; then exit 1; fi
 if curl --fail --silent --max-time 10 --resolve wrong.lan:443:127.0.0.1 --cacert /root/https-test.crt https://wrong.lan/ >/dev/null; then exit 1; fi
 '''
+            if VARIANT == 'debian':
+                script += disk_checks(stage, nonce)
             if stage == 1:
-                if VARIANT == 'systemd':
+                if SYSTEMD:
                     script += '''printf 'Testing native systemd coldplug recovery\\n'
 systemctl stop dhcpcd.service
-systemctl stop systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket systemd-udevd-varlink.socket
+systemctl stop systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket
 '''
+                    if VARIANT == 'systemd':
+                        script += 'systemctl stop systemd-udevd-varlink.socket\n'
                 else:
                     script += '''printf 'Testing delayed udev coldplug recovery\\n'
 killall dhcpcd
@@ -254,7 +271,7 @@ for i in $(seq 1 30); do pidof udevd >/dev/null || break; sleep 1; done
 modprobe -r e1000e
 rm -rf /run/udev/data
 '''
-                if VARIANT == 'systemd':
+                if SYSTEMD:
                     script += '''udevadm trigger --type=devices --action=add
 test ! -d /sys/module/e1000e
 sleep 5
@@ -289,7 +306,7 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
                 diagnostic_marker = 'ZXS_DIAGNOSTICS_' + nonce
                 diagnostic = ('ip -br link; ip -4 addr; ip -4 route; '
                               'for c in /sys/class/vtconsole/vtcon*; do cat "$c/name" "$c/bind"; done; '
-                              + ('journalctl -b -n 70 --no-pager; ' if VARIANT == 'systemd'
+                              + ('journalctl -b -n 70 --no-pager; ' if SYSTEMD
                                  else 'tail -60 /var/log/messages; ')
                               + f"printf '\\n{diagnostic_marker}\\n'")
                 try:
@@ -316,6 +333,51 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
             console.log(b'', final=True)
 
 
+def disk_checks(stage, nonce):
+    script = 'mkdir -p /mnt/test-ext4 /mnt/test-btrfs\n'
+    if stage == 1:
+        script += '''printf '%s\\n' 'label: gpt' ',,L' | sfdisk /dev/vdb
+udevadm settle --timeout=30
+test -b /dev/vdb1
+mkfs.ext4 -F -b 4096 /dev/vdb1 32768
+e2fsck -fn /dev/vdb1
+resize2fs /dev/vdb1
+e2fsck -fn /dev/vdb1
+mkfs.btrfs -f /dev/vdc
+'''
+    script += '''sfdisk --dump /dev/vdb | grep -qx 'label: gpt'
+mount UUID="$(blkid -s UUID -o value /dev/vdb1)" /mnt/test-ext4
+mount UUID="$(blkid -s UUID -o value /dev/vdc)" /mnt/test-btrfs
+findmnt -n -o FSTYPE /mnt/test-ext4 | grep -qx ext4
+findmnt -n -o FSTYPE /mnt/test-btrfs | grep -qx btrfs
+'''
+    if stage == 1:
+        script += f'''printf '%s\\n' '{nonce}' > /mnt/test-ext4/persistent
+btrfs subvolume create /mnt/test-btrfs/data
+printf '%s\\n' '{nonce}' > /mnt/test-btrfs/data/persistent
+btrfs subvolume snapshot -r /mnt/test-btrfs/data /mnt/test-btrfs/snapshot
+printf 'modified\\n' > /mnt/test-btrfs/data/persistent
+'''
+    script += f'''test "$(cat /mnt/test-ext4/persistent)" = '{nonce}'
+test "$(cat /mnt/test-btrfs/snapshot/persistent)" = '{nonce}'
+test "$(cat /mnt/test-btrfs/data/persistent)" = modified
+btrfs scrub start -B /mnt/test-btrfs
+btrfs device stats /mnt/test-btrfs
+sync
+umount /mnt/test-ext4 /mnt/test-btrfs
+e2fsck -fn /dev/vdb1
+btrfs check --readonly /dev/vdc
+'''
+    if stage == 1:
+        script += '''for tool in apt apt-get apt-cache dpkg dpkg-query perl bash update-initramfs; do
+    if command -v "$tool"; then exit 1; fi
+done
+test ! -d /var/lib/dpkg
+test ! -d /var/lib/apt
+'''
+    return script
+
+
 def main():
     identity = artifact_identity()
     require_current_report('verify', identity)
@@ -323,10 +385,15 @@ def main():
     folder.mkdir(parents=True, exist_ok=True)
     subprocess.run(['cp', '--sparse=always', str(OUTPUT / 'images/disk.img'), str(folder / 'disk.img')], check=True)
     (folder / 'OVMF_VARS.fd').unlink(missing_ok=True)
+    if VARIANT == 'debian':
+        for name, size in (('ext4-test.img', 256), ('btrfs-test.img', 512)):
+            with (folder / name).open('wb') as stream:
+                stream.truncate(size * 1024**2)
     password = 'Test-' + secrets.token_urlsafe(20)
     nonce = secrets.token_hex(12)
     backend = folder / 'test-http-server'
-    subprocess.run([str(OUTPUT / 'host/bin/x86_64-linux-gcc'), '-O2', '-Wall', '-Wextra', '-Werror',
+    compiler = 'gcc' if VARIANT == 'debian' else str(OUTPUT / 'host/bin/x86_64-linux-gcc')
+    subprocess.run([compiler, '-O2', '-Wall', '-Wextra', '-Werror',
                     str(ROOT / 'scripts/test-http-server.c'), '-o', str(backend)], check=True)
     Handler.backend_payload = backend.read_bytes()
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -337,14 +404,17 @@ def main():
     try:
         for stage in (1, 2):
             timings.append(boot(stage, folder, password, nonce, server.server_port))
-            passed.append(f'UEFI disk boot {stage}, password login, BusyBox shell and commands, framebuffer console, IPv4 DHCP, HTTP request, IPv4LL on isolated e1000e NIC, forwarding disabled')
+            tools = 'Debian dash and GNU tools' if VARIANT == 'debian' else 'BusyBox shell and commands'
+            passed.append(f'UEFI disk boot {stage}, password login, {tools}, framebuffer console, IPv4 DHCP, HTTP request, IPv4LL on isolated e1000e NIC, forwarding disabled')
             passed.append(f'HTTPS boot {stage}: TLS 1.2/1.3 to loopback HTTP, trusted custom certificate, DNS/IP SAN verification, rejection of unknown certificate and wrong hostname, unprivileged TLS daemon')
             if stage == 1:
                 passed.append('HTTPS configuration: disabled without credentials, generate and import custom certificate, reject mismatched key without replacing certificate, private key permissions')
-                passed.append(('Native systemd coldplug recovery' if VARIANT == 'systemd' else 'Delayed udev startup')
+                passed.append(('Native systemd coldplug recovery' if SYSTEMD else 'Delayed udev startup')
                               + ': replay coldplug, autoload e1000e, restore DHCP/HTTP and IPv4LL')
-            if VARIANT == 'systemd':
+            if SYSTEMD:
                 passed.append(f'Systemd boot {stage}: native services, no failed units, HTTPS automatic restart after SIGKILL')
+            if VARIANT == 'debian':
+                passed.append(f'Disk boot {stage}: ext4 UUID mount, e2fsck, Btrfs read-only snapshot, scrub, check and persistent data')
             print(f'UEFI boot {stage}: passed')
         passed.append('Root password, initialization state and test data survive a cold reboot')
         passed.append('HTTPS certificate and private key persist; HTTPS starts automatically after a cold reboot')

@@ -118,8 +118,54 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  debian:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Make room on the disposable hosted runner
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: .cache/debian/
+          key: ${{ runner.os }}-zxs-debian-${{ hashFiles('debian/bootstrap.json') }}
+      - name: Prepare Debian builder and QEMU
+        run: ./debian-build.sh setup
+      - name: Assemble minimal Debian from signed APT repositories
+        run: ./debian-build.sh build
+      - name: Verify UEFI media, official packages and factory state
+        run: ./debian-build.sh verify
+      - name: Test two boots, LAN HTTPS, ext4 and Btrfs data disks
+        run: ./debian-build.sh test
+      - name: Package verified image and corresponding sources
+        run: |
+          ./debian-build.sh package
+          ./debian-build.sh legal-info
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets-debian
+          path: dist/zxs-linux-amd64-debian/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: build-logs-debian
+          path: |
+            .work/debian/logs/
+            .work/debian/results/
+            .work/debian/boot-test/*.log
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
+
   publish:
-    needs: build
+    needs: [build, debian]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

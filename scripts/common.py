@@ -7,14 +7,14 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get('ZXS_ROOT', Path(__file__).resolve().parents[1]))
 VARIANT = os.environ.get('ZXS_VARIANT', 'busybox')
-if VARIANT not in ('busybox', 'systemd'):
-    raise ValueError('ZXS_VARIANT must be busybox or systemd')
+if VARIANT not in ('busybox', 'systemd', 'debian'):
+    raise ValueError('ZXS_VARIANT must be busybox, systemd or debian')
 CACHE = Path(os.environ.get('ZXS_CACHE_DIR', ROOT / '.cache'))
-WORK = Path(os.environ.get('ZXS_WORK_DIR', ROOT / ('.work/systemd' if VARIANT == 'systemd' else '.work')))
+WORK = Path(os.environ.get('ZXS_WORK_DIR', ROOT / ('.work/' + VARIANT if VARIANT != 'busybox' else '.work')))
 OUTPUT = Path(os.environ.get('ZXS_OUTPUT_DIR', WORK / 'output'))
 RESULTS = WORK / 'results'
-DIST = ROOT / 'dist' / ('zxs-linux-amd64-systemd' if VARIANT == 'systemd' else 'zxs-linux-amd64')
-ASSET_PREFIX = 'systemd-' if VARIANT == 'systemd' else ''
+DIST = ROOT / 'dist' / ('zxs-linux-amd64-' + VARIANT if VARIANT != 'busybox' else 'zxs-linux-amd64')
+ASSET_PREFIX = VARIANT + '-' if VARIANT != 'busybox' else ''
 KERNEL_VERSION = '6.18.58'
 
 
@@ -38,7 +38,8 @@ def config(path):
 
 
 def artifact_identity():
-    return {name: sha256(OUTPUT / 'images' / name) for name in ('disk.img', 'bzImage')}
+    names = ('disk.img', 'bzImage', 'initrd.img') if VARIANT == 'debian' else ('disk.img', 'bzImage')
+    return {name: sha256(OUTPUT / 'images' / name) for name in names}
 
 
 def report(name, value):
