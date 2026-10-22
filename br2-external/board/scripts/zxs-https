@@ -70,8 +70,12 @@ cmp -s "$staging/cert.pub" "$staging/key.pub" || {
     echo 'Certificate and private key do not match; current certificate unchanged.' >&2
     exit 1
 }
-cat "$staging/cert.pem" "$staging/key.pem" > "$staging/server.pem"
+{ cat "$staging/cert.pem"; printf '\n'; cat "$staging/key.pem"; } > "$staging/server.pem"
 chmod 0600 "$staging/server.pem"
 mv -f "$staging/server.pem" "$directory/server.pem"
-/etc/init.d/S50stunnel restart
+if [ -d /run/systemd/system ]; then
+    systemctl restart zxs-https.service
+else
+    /etc/init.d/S50stunnel restart
+fi
 echo 'HTTPS enabled. Export the public certificate with: zxs-https certificate'

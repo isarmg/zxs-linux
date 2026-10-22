@@ -22,8 +22,14 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [busybox, systemd]
     env:
       RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      ZXS_VARIANT: ${{ matrix.variant }}
+      BUILD_WORK_DIR: ${{ matrix.variant == 'systemd' && '.work/systemd' || '.work' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -46,10 +52,10 @@ jobs:
         with:
           path: |
             .cache/
-            .work/output/
-          key: ${{ runner.os }}-zxs-${{ hashFiles('build.sh', 'scripts/setup-host.sh', 'br2-external/configs/zxs_x86_64_defconfig', 'br2-external/board/linux.fragment', 'br2-external/board/busybox.fragment') }}-${{ github.sha }}
+            ${{ env.BUILD_WORK_DIR }}/output/
+          key: ${{ runner.os }}-zxs-${{ matrix.variant }}-${{ hashFiles('build.sh', 'scripts/setup-host.sh', 'br2-external/configs/*defconfig', 'br2-external/board/linux.fragment', 'br2-external/board/busybox.fragment', 'br2-external/board/systemd/busybox.fragment') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-zxs-${{ hashFiles('build.sh', 'scripts/setup-host.sh', 'br2-external/configs/zxs_x86_64_defconfig', 'br2-external/board/linux.fragment', 'br2-external/board/busybox.fragment') }}-
+            ${{ runner.os }}-zxs-${{ matrix.variant }}-${{ hashFiles('build.sh', 'scripts/setup-host.sh', 'br2-external/configs/*defconfig', 'br2-external/board/linux.fragment', 'br2-external/board/busybox.fragment', 'br2-external/board/systemd/busybox.fragment') }}-
       - name: Prepare Debian 13 builder
         id: setup
         shell: bash
@@ -71,16 +77,16 @@ jobs:
           DOCKERFILE
           docker build --build-arg BUILD_UID="$(id -u)" --build-arg BUILD_GID="$(id -g)" \
             --tag zxs-builder "$build_context"
-          docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh setup
+          docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder ./build.sh setup
       - name: Compile kernel and system image
-        run: docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh build
+        run: docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder ./build.sh build
       - name: Verify boot media and required capabilities
-        run: docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh verify
-      - name: Test two UEFI boots, LAN HTTPS and delayed udev recovery
-        run: docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder ./build.sh test
+        run: docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder ./build.sh verify
+      - name: Test two UEFI boots, LAN HTTPS and native device recovery
+        run: docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder ./build.sh test
       - name: Package validated artifacts and complete corresponding sources
         run: |
-          docker run --rm --volume "$PWD:/src" --env JOBS=4 zxs-builder \
+          docker run --rm --volume "$PWD:/src" --env JOBS=4 --env ZXS_VARIANT zxs-builder \
             bash -Eeuo pipefail -c './build.sh package && ./build.sh legal-info'
       - name: Save reusable compilation even if a later check fails
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true' }}
@@ -89,13 +95,13 @@ jobs:
         with:
           path: |
             .cache/
-            .work/output/
+            ${{ env.BUILD_WORK_DIR }}/output/
           key: ${{ steps.build-cache.outputs.cache-primary-key }}
       - name: Keep verified release assets
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-assets
-          path: dist/zxs-linux-amd64/
+          name: release-assets-${{ matrix.variant }}
+          path: dist/zxs-linux-amd64${{ matrix.variant == 'systemd' && '-systemd' || '' }}/
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
@@ -103,11 +109,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: build-logs
+          name: build-logs-${{ matrix.variant }}
           path: |
-            .work/logs/
-            .work/results/
-            .work/boot-test/*.log
+            ${{ env.BUILD_WORK_DIR }}/logs/
+            ${{ env.BUILD_WORK_DIR }}/results/
+            ${{ env.BUILD_WORK_DIR }}/boot-test/*.log
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 7
@@ -128,9 +134,11 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: release-assets
-          path: dist/zxs-linux-amd64/
+          pattern: release-assets-*
+          merge-multiple: true
+          path: dist/release-assets/
       - name: Publish only after validation and all uploads succeed
         env:
           GH_TOKEN: ${{ github.token }}
+          ZXS_RELEASE_DIR: dist/release-assets
         run: scripts/publish-release.sh "$RELEASE_TAG"

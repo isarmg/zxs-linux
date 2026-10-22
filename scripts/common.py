@@ -6,10 +6,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(os.environ.get('ZXS_ROOT', Path(__file__).resolve().parents[1]))
+VARIANT = os.environ.get('ZXS_VARIANT', 'busybox')
+if VARIANT not in ('busybox', 'systemd'):
+    raise ValueError('ZXS_VARIANT must be busybox or systemd')
 CACHE = Path(os.environ.get('ZXS_CACHE_DIR', ROOT / '.cache'))
-WORK = Path(os.environ.get('ZXS_WORK_DIR', ROOT / '.work'))
+WORK = Path(os.environ.get('ZXS_WORK_DIR', ROOT / ('.work/systemd' if VARIANT == 'systemd' else '.work')))
 OUTPUT = Path(os.environ.get('ZXS_OUTPUT_DIR', WORK / 'output'))
 RESULTS = WORK / 'results'
+DIST = ROOT / 'dist' / ('zxs-linux-amd64-systemd' if VARIANT == 'systemd' else 'zxs-linux-amd64')
+ASSET_PREFIX = 'systemd-' if VARIANT == 'systemd' else ''
 KERNEL_VERSION = '6.18.58'
 
 
@@ -39,6 +44,7 @@ def artifact_identity():
 def report(name, value):
     RESULTS.mkdir(parents=True, exist_ok=True)
     value['recorded_at'] = datetime.now(timezone.utc).isoformat()
+    value['variant'] = VARIANT
     path = RESULTS / (name + '.json')
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + '\n')
     return path
@@ -46,6 +52,7 @@ def report(name, value):
 
 def require_current_report(name, identity):
     value = json.loads((RESULTS / (name + '.json')).read_text())
-    if value.get('status') != 'passed' or value.get('artifacts') != identity:
+    if (value.get('status') != 'passed' or value.get('artifacts') != identity
+            or value.get('variant', 'busybox') != VARIANT):
         raise RuntimeError(f'{name} has not passed for the current image; rerun that stage.')
     return value

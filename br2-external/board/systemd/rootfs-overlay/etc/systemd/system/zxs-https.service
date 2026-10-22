@@ -1,0 +1,25 @@
+[Unit]
+Description=ZXS LAN HTTPS termination
+After=local-fs.target
+ConditionPathExists=/etc/zxs/https/server.pem
+
+[Service]
+Type=forking
+ExecStartPre=/usr/bin/mkdir -p /run/zxs-https
+ExecStartPre=/usr/bin/chown nobody:nobody /run/zxs-https
+ExecStartPre=/usr/bin/chmod 0750 /run/zxs-https
+ExecStartPre=/usr/bin/rm -f /run/zxs-https/stunnel.pid
+PIDFile=/run/zxs-https/stunnel.pid
+ExecStart=/usr/bin/stunnel /etc/stunnel/stunnel.conf
+Restart=on-failure
+RestartSec=1
+TimeoutStartSec=30
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+enable getty@tty1.service
+enable serial-getty@ttyS0.service
+enable dhcpcd.service
+enable zxs-https.service

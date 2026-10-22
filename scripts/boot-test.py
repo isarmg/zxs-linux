@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 
-from common import CACHE, OUTPUT, ROOT, WORK, artifact_identity, report, require_current_report
+from common import CACHE, OUTPUT, ROOT, VARIANT, WORK, artifact_identity, report, require_current_report
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -81,6 +81,11 @@ class Console:
         self.process.stdin.flush()
 
 
+def metric_pattern(marker):
+    # '$' also matches an incomplete read buffer; wait for the actual newline.
+    return '^' + re.escape(marker) + r':([0-9.]+):([0-9]+)\n'
+
+
 def boot(stage, folder, password, nonce, port):
     prefix = CACHE / 'host/usr/share'
     firmware_dir = prefix / 'OVMF'
@@ -101,24 +106,31 @@ def boot(stage, folder, password, nonce, port):
         '-device', 'e1000e,netdev=isolated,mac=52:54:00:12:34:57,romfile=',
     ]
     with (folder / f'boot-{stage}.log').open('wb') as logfile:
+        started = time.monotonic()
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, bufsize=0)
         console = Console(process, logfile, password)
         try:
             if stage == 1:
                 console.expect('ZXS_FIRST_BOOT:')
+                console_ready = time.monotonic() - started
                 console.send('')
                 console.expect('New password:')
                 console.send(password)
                 console.expect('Retype password:')
                 console.send(password)
             console.expect('zxs-linux login:')
+            if stage == 2:
+                console_ready = time.monotonic() - started
             console.send('root')
             console.expect('Password:')
             console.send(password)
             console.expect(r'^.*# $', timeout=30)
             marker = 'ZXS_TEST_PASS_' + nonce + '_' + str(stage)
             failure = 'ZXS_TEST_FAIL_' + nonce + '_' + str(stage)
+            metrics_marker = 'ZXS_BOOT_METRICS_' + nonce + '_' + str(stage)
+            start_https = ('systemctl start zxs-https.service' if VARIANT == 'systemd'
+                           else '/etc/init.d/S50stunnel start')
             script = f'''set -eux
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "\\n{failure}:%s\\n" "$rc"; fi' EXIT
 uname -r
@@ -126,6 +138,9 @@ ip -4 addr
 ip -4 route
 test "$(uname -r)" = '6.18.58'
 test -e /etc/zxs/initialized
+readlink /proc/$$/exe | grep -q '/busybox$'
+ls --help 2>&1 | grep -q BusyBox
+printf '\\n{metrics_marker}:%s:%s\\n' "$(cut -d' ' -f1 /proc/uptime)" "$(grep '^MemAvailable:' /proc/meminfo | tr -s ' ' | cut -d' ' -f2)"
 bound_console=0
 for console in /sys/class/vtconsole/vtcon*; do
     if grep -q 'frame buffer' "$console/name" && test "$(cat "$console/bind")" = 1; then
@@ -145,9 +160,26 @@ for i in $(seq 1 60); do ip -4 addr show | grep -q 'inet 169[.]254[.]' && break;
 ip -4 addr show | grep -q 'inet 169[.]254[.]'
 grep -qx 'zxs=absent' /etc/zxs-release
 '''
+            if VARIANT == 'systemd':
+                script += '''test "$(cat /proc/1/comm)" = systemd
+test -d /sys/fs/cgroup
+for i in $(seq 1 30); do systemctl is-active --quiet multi-user.target && break; sleep 1; done
+systemctl is-active --quiet multi-user.target
+systemctl is-active dhcpcd.service systemd-journald.service systemd-udevd.service
+busctl --system --no-pager list >/dev/null
+test -z "$(systemctl --failed --no-legend --plain)"
+grep -q '^Storage=volatile$' /etc/systemd/journald.conf.d/zxs.conf
+test -s /etc/machine-id
+'''
+                if stage == 1:
+                    script += 'cp /etc/machine-id /root/test-machine-id\n'
+                else:
+                    script += 'cmp -s /etc/machine-id /root/test-machine-id\n'
+            else:
+                script += 'test "$(cat /proc/1/comm)" = init\n'
             if stage == 1:
                 script += f'''test ! -e /etc/zxs/https/server.pem
-/etc/init.d/S50stunnel start
+{start_https}
 test ! -e /run/zxs-https/stunnel.pid
 curl --fail --silent --max-time 15 http://10.0.2.2:{port}/test-backend -o /root/zxs-test-http
 chmod 0700 /root/zxs-test-http
@@ -162,12 +194,27 @@ sha256sum -c /root/https-test.sha
 '''
             else:
                 script += 'sha256sum -c /root/https-test.sha\n'
-            script += '''find /etc/zxs/https -maxdepth 0 -perm 0700 | grep -q .
+            script += f'''find /etc/zxs/https -maxdepth 0 -perm 0700 | grep -q .
 find /etc/zxs/https/server.pem -maxdepth 0 -perm 0600 | grep -q .
 test -s /run/zxs-https/stunnel.pid
 https_pid=$(cat /run/zxs-https/stunnel.pid)
-/etc/init.d/S50stunnel start
+{start_https}
 test "$(cat /run/zxs-https/stunnel.pid)" = "$https_pid"
+'''
+            if VARIANT == 'systemd':
+                script += '''systemctl is-active --quiet zxs-https.service
+test "$(systemctl show --property MainPID --value zxs-https.service)" = "$https_pid"
+kill -KILL "$https_pid"
+for i in $(seq 1 20); do
+    new_pid=$(systemctl show --property MainPID --value zxs-https.service)
+    if [ "$new_pid" -gt 0 ] && [ "$new_pid" != "$https_pid" ] && [ -s /run/zxs-https/stunnel.pid ]; then break; fi
+    sleep 1
+done
+test "$new_pid" -gt 0
+test "$new_pid" != "$https_pid"
+https_pid=$new_pid
+'''
+            script += '''
 awk '/^Uid:/ { if ($2 != 65534) exit 1; found=1 } END { if (!found) exit 1 }' /proc/"$https_pid"/status
 /root/zxs-test-http &
 for i in $(seq 1 10); do curl --fail --silent --max-time 2 http://127.0.0.1:8080/ >/dev/null && break; sleep 1; done
@@ -179,8 +226,16 @@ if curl --fail --silent --max-time 10 https://127.0.0.1/ >/dev/null; then exit 1
 if curl --fail --silent --max-time 10 --resolve wrong.lan:443:127.0.0.1 --cacert /root/https-test.crt https://wrong.lan/ >/dev/null; then exit 1; fi
 '''
             if stage == 1:
-                script += '''printf 'Testing delayed udev coldplug recovery\\n'
+                if VARIANT == 'systemd':
+                    script += '''printf 'Testing native systemd coldplug recovery\\n'
+systemctl stop dhcpcd.service
+systemctl stop systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket systemd-udevd-varlink.socket
+'''
+                else:
+                    script += '''printf 'Testing delayed udev coldplug recovery\\n'
 killall dhcpcd
+'''
+                script += '''
 sleep 1
 for interface in /sys/class/net/*; do
     name=${interface##*/}
@@ -189,11 +244,27 @@ for interface in /sys/class/net/*; do
         ip -4 addr flush dev "$name"
     fi
 done
-udevadm control --exit
+'''
+                if VARIANT == 'busybox':
+                    script += '''udevadm control --exit
 for i in $(seq 1 30); do pidof udevd >/dev/null || break; sleep 1; done
 ! pidof udevd >/dev/null
+'''
+                script += '''
 modprobe -r e1000e
 rm -rf /run/udev/data
+'''
+                if VARIANT == 'systemd':
+                    script += '''udevadm trigger --type=devices --action=add
+test ! -d /sys/module/e1000e
+sleep 5
+systemctl restart systemd-udev-trigger.service
+udevadm settle --timeout=30
+test -d /sys/module/e1000e
+systemctl start dhcpcd.service
+'''
+                else:
+                    script += '''
 (sleep 5; /sbin/udevd --daemon) >/dev/null 2>&1 &
 udevadm trigger --type=devices --action=add
 test ! -d /sys/module/e1000e
@@ -212,13 +283,15 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
                 script += f"test \"$(cat /etc/zxs/boot-test-persistence)\" = '{nonce}'\n"
             script += f"uname -r; ip -4 addr; printf '\\n{marker}\\n'; sync; poweroff\n"
             console.send('sh -c ' + shlex.quote(script))
+            measured = console.expect(metric_pattern(metrics_marker), timeout=30)
             outcome = console.expect('^(' + marker + '|' + failure + r':[0-9]+)$', timeout=300)
             if outcome.group(1) != marker:
                 diagnostic_marker = 'ZXS_DIAGNOSTICS_' + nonce
                 diagnostic = ('ip -br link; ip -4 addr; ip -4 route; '
                               'for c in /sys/class/vtconsole/vtcon*; do cat "$c/name" "$c/bind"; done; '
-                              'tail -60 /var/log/messages; '
-                              f"printf '\\n{diagnostic_marker}\\n'")
+                              + ('journalctl -b -n 70 --no-pager; ' if VARIANT == 'systemd'
+                                 else 'tail -60 /var/log/messages; ')
+                              + f"printf '\\n{diagnostic_marker}\\n'")
                 try:
                     console.send('sh -c ' + shlex.quote(diagnostic))
                     console.expect('^' + diagnostic_marker + '$', timeout=15)
@@ -229,6 +302,9 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
             process.wait(timeout=30)
             if process.returncode != 0:
                 raise RuntimeError(f'QEMU returned {process.returncode}')
+            return {'boot': stage, 'console_ready_wall_seconds': round(console_ready, 3),
+                    'login_guest_uptime_seconds': float(measured.group(1)),
+                    'login_mem_available_kib': int(measured.group(2))}
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -257,19 +333,25 @@ def main():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     passed = []
+    timings = []
     try:
         for stage in (1, 2):
-            boot(stage, folder, password, nonce, server.server_port)
-            passed.append(f'UEFI disk boot {stage}, password login, framebuffer console, IPv4 DHCP, HTTP request, IPv4LL on isolated e1000e NIC, forwarding disabled')
+            timings.append(boot(stage, folder, password, nonce, server.server_port))
+            passed.append(f'UEFI disk boot {stage}, password login, BusyBox shell and commands, framebuffer console, IPv4 DHCP, HTTP request, IPv4LL on isolated e1000e NIC, forwarding disabled')
             passed.append(f'HTTPS boot {stage}: TLS 1.2/1.3 to loopback HTTP, trusted custom certificate, DNS/IP SAN verification, rejection of unknown certificate and wrong hostname, unprivileged TLS daemon')
             if stage == 1:
                 passed.append('HTTPS configuration: disabled without credentials, generate and import custom certificate, reject mismatched key without replacing certificate, private key permissions')
-                passed.append('Delayed udev startup: replay coldplug, autoload e1000e, restore DHCP/HTTP and IPv4LL')
+                passed.append(('Native systemd coldplug recovery' if VARIANT == 'systemd' else 'Delayed udev startup')
+                              + ': replay coldplug, autoload e1000e, restore DHCP/HTTP and IPv4LL')
+            if VARIANT == 'systemd':
+                passed.append(f'Systemd boot {stage}: native services, no failed units, HTTPS automatic restart after SIGKILL')
             print(f'UEFI boot {stage}: passed')
         passed.append('Root password, initialization state and test data survive a cold reboot')
         passed.append('HTTPS certificate and private key persist; HTTPS starts automatically after a cold reboot')
         path = report('boot-test', {
             'status': 'passed', 'checks': passed, 'artifacts': identity,
+            'timings': timings,
+            'timing_scope': 'QEMU TCG wall time from process launch to first console prompt; two boots, not a hardware benchmark',
             'logs': [str(folder / f'boot-{stage}.log') for stage in (1, 2)],
             'unrun_physical_checks': ['Intel/AMD DP output', 'Thunderbolt/USB4 link and hotplug',
                                       'Physical PCIe/USB NIC throughput and hotplug'],

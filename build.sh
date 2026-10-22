@@ -3,8 +3,14 @@ set -Eeuo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 export ZXS_ROOT="$ROOT"
+export ZXS_VARIANT=${ZXS_VARIANT:-busybox}
+case "$ZXS_VARIANT" in
+    busybox) default_work="$ROOT/.work"; defconfig=zxs_x86_64_defconfig ;;
+    systemd) default_work="$ROOT/.work/systemd"; defconfig=zxs_x86_64_systemd_defconfig ;;
+    *) echo 'ZXS_VARIANT must be busybox or systemd.' >&2; exit 2 ;;
+esac
 export ZXS_CACHE_DIR=${ZXS_CACHE_DIR:-"$ROOT/.cache"}
-export ZXS_WORK_DIR=${ZXS_WORK_DIR:-"$ROOT/.work"}
+export ZXS_WORK_DIR=${ZXS_WORK_DIR:-"$default_work"}
 export ZXS_OUTPUT_DIR="$ZXS_WORK_DIR/output"
 BR_VERSION=2026.08
 BR_SHA256=87aaca4164ea9d5c8085854953018263f7963f07c22e73a2a2185cc98c581c34
@@ -79,8 +85,16 @@ configure() {
     check || return
     source_setup || return
     mkdir -p "$ZXS_OUTPUT_DIR"
+    if [[ -f $ZXS_OUTPUT_DIR/.config ]]; then
+        local previous=busybox
+        if grep -qx 'BR2_INIT_SYSTEMD=y' "$ZXS_OUTPUT_DIR/.config"; then previous=systemd; fi
+        [[ $previous == "$ZXS_VARIANT" ]] || {
+            echo 'Init systems require separate outputs; choose a fresh ZXS_WORK_DIR.' >&2
+            return 1
+        }
+    fi
     # Buildroot reapplies overlays on each build; configured package outputs are retained.
-    brmake zxs_x86_64_defconfig
+    brmake "$defconfig"
 }
 
 run_stage() {
@@ -97,8 +111,8 @@ activate_host
 case "${1:-plan}" in
     plan)
         printf '%s\n' 'amd64 / UEFI, Linux 6.18.58, Buildroot 2026.08, Bootlin glibc 2025.08-1' \
-            'BusyBox + eudev + IPv4 DHCP/IPv4LL; Intel/AMD iGPU KMS; USB4/Thunderbolt and wired NIC drivers' \
-            'No ZXS, reverse proxy, bridge, NAT, Wi-Fi or graphical desktop' \
+            "Variant: $ZXS_VARIANT; BusyBox tools + IPv4 DHCP/IPv4LL; Intel/AMD iGPU KMS; USB4 and wired NIC drivers" \
+            'System LAN HTTPS via stunnel; no ZXS, bridge, NAT, Wi-Fi or graphical desktop' \
             'GPT: 64 MiB EFI + 1 GiB writable ext4 root; first console login sets the root password' \
             "Cache: $ZXS_CACHE_DIR" "Output: $ZXS_OUTPUT_DIR" "Parallel jobs: $JOBS"
         ;;

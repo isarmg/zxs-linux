@@ -2,7 +2,7 @@
 """Bundle Buildroot legal-info with the external toolchain's complete component sources."""
 import tarfile
 
-from common import CACHE, OUTPUT, ROOT, artifact_identity, require_current_report, sha256
+from common import ASSET_PREFIX, CACHE, DIST, OUTPUT, ROOT, artifact_identity, require_current_report, sha256
 from redistribution import fetch_sources
 
 identity = artifact_identity()
@@ -15,9 +15,9 @@ if not (legal / 'manifest.csv').is_file():
 entries, downloaded = fetch_sources()
 cache = CACHE / 'redistribution'
 
-destination = ROOT / 'dist/zxs-linux-amd64'
+destination = DIST
 destination.mkdir(parents=True, exist_ok=True)
-archive_path = destination / 'source-licenses.tar.gz'
+archive_path = destination / (ASSET_PREFIX + 'source-licenses.tar.gz')
 temporary = archive_path.with_name(archive_path.name + '.part')
 supplement = cache / 'SUPPLEMENT.md'
 supplement.write_text('''# Corresponding sources and licenses
@@ -52,7 +52,7 @@ with tarfile.open(temporary, 'w:gz', compresslevel=1) as archive:
     archive.add(ROOT / 'keys/redistribution.json', arcname='redistribution.json')
     archive.add(supplement, arcname='SUPPLEMENT.md')
 temporary.replace(archive_path)
-(destination / 'SHA256SUMS').write_text(''.join(
+(destination / (ASSET_PREFIX + 'SHA256SUMS')).write_text(''.join(
     f'{sha256(path)}  {path.name}\n' for path in sorted(destination.iterdir())
-    if path.is_file() and path.name != 'SHA256SUMS'))
+    if path.is_file() and path.name != ASSET_PREFIX + 'SHA256SUMS'))
 print(f'Source/license archive: {archive_path} ({archive_path.stat().st_size / 1024**2:.1f} MiB)')
