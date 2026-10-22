@@ -1,0 +1,82 @@
+[
+  {
+    "path": "toolchain/buildroot-toolchains-2025.08.1.tar.gz",
+    "url": "https://codeload.github.com/bootlin/buildroot-toolchains/tar.gz/refs/tags/toolchains.bootlin.com-2025.08.1",
+    "sha256": "7baa9ed3fd385c8cab194322db30b74978e958af80a1542549ec0508e017e01b"
+  },
+  {
+    "path": "toolchain/licenses/gcc-final-14.3.0/COPYING",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/gcc-final-14.3.0/COPYING",
+    "sha256": "231f7edcc7352d7734a96eef0b8030f77982678c516876fcb81e25b32d68564c"
+  },
+  {
+    "path": "toolchain/licenses/gcc-final-14.3.0/COPYING.LIB",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/gcc-final-14.3.0/COPYING.LIB",
+    "sha256": "a9bdde5616ecdd1e980b44f360600ee8783b1f99b8cc83a2beb163a0a390e861"
+  },
+  {
+    "path": "toolchain/licenses/gcc-final-14.3.0/COPYING.RUNTIME",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/gcc-final-14.3.0/COPYING.RUNTIME",
+    "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
+  },
+  {
+    "path": "toolchain/licenses/gcc-final-14.3.0/COPYING3",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/gcc-final-14.3.0/COPYING3",
+    "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+  },
+  {
+    "path": "toolchain/licenses/gcc-final-14.3.0/COPYING3.LIB",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/gcc-final-14.3.0/COPYING3.LIB",
+    "sha256": "a853c2ffec17057872340eee242ae4d96cbf2b520ae27d903e1b2fef1a5f9d1c"
+  },
+  {
+    "path": "toolchain/licenses/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/COPYING",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/COPYING",
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+  },
+  {
+    "path": "toolchain/licenses/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/COPYING.LIB",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/COPYING.LIB",
+    "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+  },
+  {
+    "path": "toolchain/licenses/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/LICENSES",
+    "url": "https://toolchains.bootlin.com/downloads/releases/licenses/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/LICENSES",
+    "sha256": "b22a69aa3f80a5201818c66cb0df0f25f9fa13cf5861b0093a058dbd12d50dce"
+  },
+  {
+    "path": "toolchain/sources/gcc-final-14.3.0/0001-disable-split-stack-for-non-thread-builds.patch",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/gcc-final-14.3.0/0001-disable-split-stack-for-non-thread-builds.patch",
+    "sha256": "8bc3dc9c3c14518a388fb61284ef8ad3c348df4d73330c90b601a81d8ba4f054"
+  },
+  {
+    "path": "toolchain/sources/gcc-final-14.3.0/0002-libsanitizer-also-undef-_TIME_BITS-in-sanitizer_proc.patch",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/gcc-final-14.3.0/0002-libsanitizer-also-undef-_TIME_BITS-in-sanitizer_proc.patch",
+    "sha256": "01e9dc819a64dd4b493cb61d3e9503dfd147e3f2ac169c7de1c8f8452177602f"
+  },
+  {
+    "path": "toolchain/sources/gcc-final-14.3.0/0003-microblaze-add-atomic-test-and-set-support.patch",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/gcc-final-14.3.0/0003-microblaze-add-atomic-test-and-set-support.patch",
+    "sha256": "360ee71a46c90037f83804cd4ee48a7bba7b944cb87f01fd7aae79aade702583"
+  },
+  {
+    "path": "toolchain/sources/gcc-final-14.3.0/gcc-14.3.0.tar.xz",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/gcc-final-14.3.0/gcc-14.3.0.tar.xz",
+    "sha256": "e0dc77297625631ac8e50fa92fffefe899a4eb702592da5c32ef04e2293aca3a"
+  },
+  {
+    "path": "toolchain/sources/gcc-final-14.3.0/series",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/gcc-final-14.3.0/series",
+    "sha256": "a1fd8322aebca334a4f01d053439aa84d2d25c8f790af7cdca6ad4da793a086e"
+  },
+  {
+    "path": "toolchain/sources/gcc-final-14.3.0/xtensa_dc233c.tar.gz",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/gcc-final-14.3.0/xtensa_dc233c.tar.gz",
+    "sha256": "a76052c0c71d4025b117dcfc18ca7e189ac495a7645fa98c1bdaddca15cce815"
+  },
+  {
+    "path": "toolchain/sources/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830.tar.gz",
+    "url": "https://toolchains.bootlin.com/downloads/releases/sources/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830/glibc-2.41-70-g1502c248d58cb99a203731707987a4342926e830.tar.gz",
+    "sha256": "166b6e7637bb45cb9352e4813005f83dd48f03ef634d3e9e94a30aa5a0300fab"
+  }
+]

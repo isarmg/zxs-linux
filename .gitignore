@@ -1,0 +1,5 @@
+.cache/
+.work/
+dist/
+__pycache__/
+

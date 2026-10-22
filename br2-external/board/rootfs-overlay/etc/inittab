@@ -1,0 +1,17 @@
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -o remount,rw /
+::sysinit:/bin/mkdir -p /dev/pts /dev/shm /run/lock/subsys
+::sysinit:/bin/mount -a
+null::sysinit:/bin/ln -sf /proc/self/fd /dev/fd
+null::sysinit:/bin/ln -sf /proc/self/fd/0 /dev/stdin
+null::sysinit:/bin/ln -sf /proc/self/fd/1 /dev/stdout
+null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
+::sysinit:/bin/hostname -F /etc/hostname
+::sysinit:/etc/init.d/rcS
+tty1::respawn:/sbin/getty -n -l /usr/sbin/console-login 0 tty1 linux
+ttyS0::respawn:/sbin/getty -n -l /usr/sbin/console-login -L 115200 ttyS0 vt100
+::ctrlaltdel:/sbin/reboot
+::shutdown:/etc/init.d/rcK
+::shutdown:/sbin/swapoff -a
+::shutdown:/bin/umount -a -r
+

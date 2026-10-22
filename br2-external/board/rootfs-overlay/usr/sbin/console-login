@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+marker=/etc/zxs/initialized
+lock=/run/console-initialize.lock
+if [ ! -e "$marker" ]; then
+    printf '\nZXS_FIRST_BOOT: press Enter to set the local root password.\n'
+    read -r _ || exit 1
+fi
+if [ ! -e "$marker" ]; then
+    if mkdir "$lock" 2>/dev/null; then
+        trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+        trap '' INT QUIT TSTP
+        printf '\nSet the local root password.\n'
+        until passwd root; do
+            printf 'Password setup did not complete; please retry.\n'
+        done
+        mkdir -p /etc/zxs
+        touch "$marker"
+        sync
+        rmdir "$lock"
+        trap - EXIT INT QUIT TSTP
+    else
+        while [ ! -e "$marker" ]; do sleep 1; done
+    fi
+fi
+exec /bin/login
+
