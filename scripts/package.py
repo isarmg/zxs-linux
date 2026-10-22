@@ -40,4 +40,3 @@ with tarfile.open(destination / 'build-sources.tar.gz', 'w:gz') as archive:
     f'{sha256(path)}  {path.name}\n' for path in sorted(destination.iterdir())
     if path.is_file() and path.name != 'SHA256SUMS'))
 print(f'Packaged verified image and build sources in {destination}')
-

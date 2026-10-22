@@ -7,4 +7,3 @@ sed -i 's|^root:[^:]*:|root:*:|' "$TARGET_DIR/etc/shadow"
 rm -f "$TARGET_DIR/etc/zxs/initialized"
 mkdir -p "$TARGET_DIR/srv" "$TARGET_DIR/etc/zxs"
 printf '%s\n' 'buildroot=2026.08' 'linux=6.18.58' 'zxs=absent' > "$TARGET_DIR/etc/zxs-release"
-

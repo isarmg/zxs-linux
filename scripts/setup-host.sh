@@ -61,4 +61,3 @@ for directory in ('usr/bin','usr/sbin','sbin'):
             wrapper.chmod(0o755)
 PY
 printf '%s\n' "$setup_digest" > "$PREFIX/.ready"
-

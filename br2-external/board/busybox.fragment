@@ -11,4 +11,3 @@ CONFIG_TIMEOUT=y
 # CONFIG_FTPD is not set
 # CONFIG_UDHCPD is not set
 # CONFIG_IFPLUGD is not set
-

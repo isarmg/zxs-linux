@@ -49,4 +49,3 @@ def require_current_report(name, identity):
     if value.get('status') != 'passed' or value.get('artifacts') != identity:
         raise RuntimeError(f'{name} has not passed for the current image; rerun that stage.')
     return value
-

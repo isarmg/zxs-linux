@@ -24,4 +24,3 @@ if [ ! -e "$marker" ]; then
     fi
 fi
 exec /bin/login
-

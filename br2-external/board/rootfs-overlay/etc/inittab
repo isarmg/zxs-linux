@@ -14,4 +14,3 @@ ttyS0::respawn:/sbin/getty -n -l /usr/sbin/console-login -L 115200 ttyS0 vt100
 ::shutdown:/etc/init.d/rcK
 ::shutdown:/sbin/swapoff -a
 ::shutdown:/bin/umount -a -r
-

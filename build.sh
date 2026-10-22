@@ -128,4 +128,3 @@ case "${1:-plan}" in
         ;;
     *) echo 'Usage: ./build.sh {plan|setup|check|configure|fetch|build|verify|test|package|legal-info|all}' >&2; exit 2 ;;
 esac
-

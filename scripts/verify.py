@@ -90,4 +90,3 @@ except Exception as error:
     report('verify', {'status': 'failed', 'checks_passed': checks, 'error': str(error)})
     print(f'Image verification failed: {error}', file=sys.stderr)
     sys.exit(1)
-

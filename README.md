@@ -54,4 +54,3 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 ## 发布
 
 已验证镜像的发布入口为 `scripts/publish-release.sh v0.1.0`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，再执行 `./build.sh package` 和 `./build.sh legal-info`。发布脚本核验所有交付文件的 SHA256 与测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
-
