@@ -40,6 +40,8 @@ try:
     require(not (target / 'etc/zxs/initialized').exists(), 'Factory image has not been initialized')
     require((target / 'usr/sbin/console-login').stat().st_mode & 0o111 != 0,
             'First-boot console initialization is executable')
+    require((target / 'etc/init.d/S11udev-coldplug').stat().st_mode & 0o111 != 0,
+            'Coldplug readiness synchronization is installed and executable')
     for binary in ('sbin/dhcpcd', 'sbin/ip', 'usr/bin/curl'):
         require((target / binary).exists(), f'Installed user-space tool: {binary}')
     for firmware in ('amdgpu', 'i915', 'xe', 'rtl_nic'):

@@ -45,7 +45,7 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 - `bzImage`、实际 Buildroot／Linux 配置及 `packages.json` 版本／许可清单。
 - `validation.json`、`SHA256SUMS` 和本工程的 `build-sources.tar.gz`。
 
-`./build.sh test` 对镜像副本执行 QEMU TCG／OVMF UEFI 冷启动、首次密码设置、密码登录、帧缓冲控制台绑定与终端写入、IPv4 DHCP、到宿主测试服务的 HTTP 请求、独立 e1000e 网卡的 IPv4LL 回退、关闭转发及第二次冷启动后的数据持久化检查。出厂镜像不包含测试密码或初始化状态。测试必须成功，且镜像摘要仍一致，才允许 `package`。
+`./build.sh test` 对镜像副本执行 QEMU TCG／OVMF UEFI 冷启动、首次密码设置、密码登录、帧缓冲控制台绑定与终端写入、IPv4 DHCP、到宿主测试服务的 HTTP 请求、独立 e1000e 网卡的 IPv4LL 回退、关闭转发、延迟 udev 启动后的设备重枚举与网络恢复，以及第二次冷启动后的数据持久化检查。出厂镜像不包含测试密码或初始化状态。测试必须成功，且镜像摘要仍一致，才允许 `package`。
 
 核显 DP 输出、真实雷电／USB4 链路、PCIe／USB 网卡吞吐及热插拔需在最终硬件上验收。雷电 PCIe 隧道的授权由硬件安全设置控制；系统不自动授权未知设备。
 
@@ -53,7 +53,7 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 
 ## 发布
 
-已验证镜像的发布入口为 `scripts/publish-release.sh v0.1.0`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，再执行 `./build.sh package` 和 `./build.sh legal-info`。发布脚本核验所有交付文件的 SHA256 与测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
+已验证镜像的发布入口为 `scripts/publish-release.sh v0.1.1`，需要已认证的 GitHub CLI。先提交源码、创建指向当前提交的版本标签并推送，再执行 `./build.sh package` 和 `./build.sh legal-info`。发布脚本核验所有交付文件的 SHA256 与测试报告，上传全部文件到草稿，上传成功后才公开 Release；已有版本不会被覆盖。
 
 GitHub Actions 的 `Build and publish release` 流程会在推送 `v*` 标签时自动执行完整构建、镜像检查、两次 UEFI 启动测试、打包和发布；失败时保留日志，公开 Release 前必须完成全部附件上传。流程在 Debian 13 容器中构建，构建任务只有读取仓库权限，独立发布任务使用 GitHub 内置令牌。也可在 Actions 页面手动运行，指定一个已存在且尚未发布的版本标签。
 
@@ -63,3 +63,5 @@ git push origin main v0.2.0
 ```
 
 `Supplement existing release toolchain sources` 手动流程可为早期发布附加完整 SDK 源码和许可证（含独立 SHA256）；新版本的常规 `legal-info` 已将这些组件一并收集。
+
+系统在网络服务前等待 udev 控制应答，再重放冷插拔事件并等待队列完成，避免后台启动竞态导致网卡未初始化。CI 分开显示设置、编译、镜像检查、启动测试和打包阶段；缓存下载与兼容的编译输出，配置或工具链变化会切换缓存。

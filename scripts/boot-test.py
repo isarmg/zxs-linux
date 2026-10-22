@@ -138,12 +138,40 @@ ip -4 addr show | grep -q 'inet 169[.]254[.]'
 grep -qx 'zxs=absent' /etc/zxs-release
 '''
             if stage == 1:
+                script += '''printf 'Testing delayed udev coldplug recovery\\n'
+killall dhcpcd
+sleep 1
+for interface in /sys/class/net/*; do
+    name=${interface##*/}
+    if [ "$name" != lo ]; then
+        ip link set "$name" down
+        ip -4 addr flush dev "$name"
+    fi
+done
+udevadm control --exit
+for i in $(seq 1 30); do pidof udevd >/dev/null || break; sleep 1; done
+! pidof udevd >/dev/null
+modprobe -r e1000e
+rm -rf /run/udev/data
+(sleep 5; /sbin/udevd --daemon) >/dev/null 2>&1 &
+udevadm trigger --type=devices --action=add
+test ! -d /sys/module/e1000e
+/etc/init.d/S11udev-coldplug start
+test -d /sys/module/e1000e
+dhcpcd --background
+'''
+                script += f'''for i in $(seq 1 45); do ip -4 route show default | grep -q default && break; sleep 1; done
+ip -4 route show default | grep -q default
+test "$(curl --fail --silent --max-time 15 http://10.0.2.2:{port}/readiness)" = 'zxs-linux-network-ok'
+for i in $(seq 1 60); do ip -4 addr show | grep -q 'inet 169[.]254[.]' && break; sleep 1; done
+ip -4 addr show | grep -q 'inet 169[.]254[.]'
+'''
                 script += f"printf '%s\\n' '{nonce}' > /etc/zxs/boot-test-persistence\n"
             else:
                 script += f"test \"$(cat /etc/zxs/boot-test-persistence)\" = '{nonce}'\n"
             script += f"uname -r; ip -4 addr; printf '\\n{marker}\\n'; sync; poweroff\n"
             console.send('sh -c ' + shlex.quote(script))
-            outcome = console.expect('^(' + marker + '|' + failure + r':[0-9]+)$', timeout=150)
+            outcome = console.expect('^(' + marker + '|' + failure + r':[0-9]+)$', timeout=300)
             if outcome.group(1) != marker:
                 diagnostic_marker = 'ZXS_DIAGNOSTICS_' + nonce
                 diagnostic = ('ip -br link; ip -4 addr; ip -4 route; '
@@ -188,6 +216,8 @@ def main():
         for stage in (1, 2):
             boot(stage, folder, password, nonce, server.server_port)
             passed.append(f'UEFI disk boot {stage}, password login, framebuffer console, IPv4 DHCP, HTTP request, IPv4LL on isolated e1000e NIC, forwarding disabled')
+            if stage == 1:
+                passed.append('Delayed udev startup: replay coldplug, autoload e1000e, restore DHCP/HTTP and IPv4LL')
             print(f'UEFI boot {stage}: passed')
         passed.append('Root password, initialization state and test data survive a cold reboot')
         path = report('boot-test', {

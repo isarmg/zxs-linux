@@ -1,0 +1,27 @@
+#!/bin/sh
+# S10 starts udevd in the background; wait for its control acknowledgement
+# before replaying coldplug events, then finish initialization before networking.
+set -eu
+
+case "${1:-}" in
+    start|restart)
+        printf 'Waiting for udev coldplug: '
+        ready=0
+        attempt=0
+        while [ "$attempt" -lt 30 ]; do
+            if udevadm control --timeout=1 --reload >/dev/null 2>&1; then
+                ready=1
+                break
+            fi
+            attempt=$((attempt + 1))
+            sleep 1
+        done
+        [ "$ready" -eq 1 ] || { echo 'FAIL (udevd not ready)' >&2; exit 1; }
+        udevadm trigger --type=subsystems --action=add
+        udevadm trigger --type=devices --action=add
+        udevadm settle --timeout=30
+        echo 'OK'
+        ;;
+    stop) ;;
+    *) echo "Usage: $0 {start|stop|restart}" >&2; exit 2 ;;
+esac
