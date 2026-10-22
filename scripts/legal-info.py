@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Bundle Buildroot legal-info with the external toolchain's runtime sources."""
-import concurrent.futures
-import json
-import shutil
+"""Bundle Buildroot legal-info with the external toolchain's complete component sources."""
 import tarfile
-import urllib.request
 
 from common import CACHE, OUTPUT, ROOT, artifact_identity, require_current_report, sha256
+from redistribution import fetch_sources
 
 identity = artifact_identity()
 require_current_report('verify', identity)
@@ -15,31 +12,8 @@ legal = OUTPUT / 'legal-info'
 if not (legal / 'manifest.csv').is_file():
     raise SystemExit('Run ./build.sh legal-info to collect package sources first.')
 
-entries = json.loads((ROOT / 'keys/redistribution.json').read_text())
+entries, downloaded = fetch_sources()
 cache = CACHE / 'redistribution'
-
-
-def fetch(entry):
-    relative = entry['path']
-    if relative.startswith('/') or '..' in relative.split('/'):
-        raise ValueError(f'Unsafe source path: {relative}')
-    target = cache / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.is_file() and sha256(target) == entry['sha256']:
-        return target
-    temporary = target.with_name(target.name + '.part')
-    if not entry['url'].startswith('https://'):
-        raise ValueError('Source downloads require HTTPS')
-    with urllib.request.urlopen(entry['url'], timeout=60) as response, temporary.open('wb') as stream:
-        shutil.copyfileobj(response, stream)
-    if sha256(temporary) != entry['sha256']:
-        raise RuntimeError(f'Source checksum mismatch: {relative}')
-    temporary.replace(target)
-    return target
-
-
-with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-    downloaded = list(pool.map(fetch, entries))
 
 destination = ROOT / 'dist/zxs-linux-amd64'
 destination.mkdir(parents=True, exist_ok=True)
@@ -54,8 +28,9 @@ Its generated README reports two automatic collection limitations; the files
 below supplement both rather than changing that generated report.
 
 `buildroot/` contains the verified Buildroot 2026.08 release and signature.
-`toolchain/` contains Bootlin's GCC 14.3.0 and glibc 2.41 runtime sources,
-patches and license texts; its build configuration, component manifest and
+`toolchain/` contains the complete Bootlin 2025.08-1 SDK component sources,
+applied patches and license texts, including GCC 14.3.0 and glibc 2.41.
+Its build configuration, component manifest and
 README come from the exact SHA256-pinned Bootlin 2025.08-1 SDK used to build
 this image. The toolchain's Buildroot source snapshot is included too.
 `redistribution.json` records pinned HTTPS origins and SHA256 for supplements.

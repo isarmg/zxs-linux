@@ -24,7 +24,7 @@
 ./build.sh verify     # 检查启动媒体、驱动、固件、工具及出厂账号状态
 ./build.sh test       # QEMU/OVMF 启动两次，验证初始化、登录、网络和持久化
 ./build.sh package    # 只打包通过当前镜像验证的产物
-./build.sh legal-info # 汇集上游源码、补丁和许可证，补齐工具链运行库源码
+./build.sh legal-info # 汇集上游源码、补丁和许可证，补齐外部工具链组件源码
 
 ./build.sh all        # 完成上述设置、编译、验证和交付流程
 ```
@@ -49,7 +49,7 @@ GPT 布局为 **64 MiB EFI 分区 + 1 GiB 可写 ext4 根分区**。GRUB 使用�
 
 核显 DP 输出、真实雷电／USB4 链路、PCIe／USB 网卡吞吐及热插拔需在最终硬件上验收。雷电 PCIe 隧道的授权由硬件安全设置控制；系统不自动授权未知设备。
 
-内核、BusyBox、工具和固件遵循各自上游许可证，`packages.json` 列出所选包。`./build.sh legal-info` 生成 `source-licenses.tar.gz`，包含 Buildroot 收集的包源码、应用补丁与许可证，以及固定摘要的 Buildroot 源码和 Bootlin glibc／GCC 运行库源码、构建配置及许可证。它同时更新交付目录中的 `SHA256SUMS`。
+内核、BusyBox、工具和固件遵循各自上游许可证，`packages.json` 列出所选包。`./build.sh legal-info` 生成 `source-licenses.tar.gz`，包含 Buildroot 收集的包源码、应用补丁与许可证，以及固定摘要的 Buildroot 源码和 Bootlin SDK 全部组件的源码、应用补丁、构建配置及许可证。它同时更新交付目录中的 `SHA256SUMS`。
 
 ## 发布
 
@@ -61,3 +61,5 @@ GitHub Actions 的 `Build and publish release` 流程会在推送 `v*` 标签时
 git tag -a v0.2.0 -m 'ZXS Linux v0.2.0'
 git push origin main v0.2.0
 ```
+
+`Supplement existing release toolchain sources` 手动流程可为早期发布附加完整 SDK 源码和许可证（含独立 SHA256）；新版本的常规 `legal-info` 已将这些组件一并收集。
